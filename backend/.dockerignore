@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+*.pyo
+venv/
+env/
+.env
+.ipynb_checkpoints/
+mlruns/
+
+# 極度重要：禁止將模型檔拷貝進 Docker Image 層，避免硬碟撐爆！
+app/resources/**
+**/*.pth
+**/*.pt
+**/*.bin
+**/*.onnx
