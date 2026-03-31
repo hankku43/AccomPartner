@@ -1,5 +1,5 @@
 # 階段 1: 構建前端 Vue 應用程式
-FROM node:18-alpine AS build
+FROM node:22-alpine AS build
 
 # 設定工作目錄
 WORKDIR /app
