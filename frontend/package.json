@@ -1,0 +1,33 @@
+{
+  "name": "final-project",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "format": "prettier --write --experimental-cli src/"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@tonejs/midi": "^2.0.28",
+    "html-midi-player": "^1.6.0",
+    "midi-writer-js": "^3.2.1",
+    "opensheetmusicdisplay": "^1.9.7",
+    "pinia": "^3.0.4",
+    "tone": "^15.1.22",
+    "vexflow": "^5.0.0",
+    "vue": "^3.5.29",
+    "vue-router": "^5.0.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.4",
+    "prettier": "3.8.1",
+    "vite": "^7.3.1",
+    "vite-plugin-vue-devtools": "^8.0.6"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  }
+}

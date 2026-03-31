@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  # 後端: FastAPI/PyTorch 服務 (內部連接埠 8000)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: accompartner_backend
+    restart: always
+    environment:
+      # 將掛載進來的路徑告訴程式
+      - MODEL_DIR=/app/app/resources
+      - ALLOWED_ORIGINS=*
+    # 在 2GB RAM 機器上，我們不限制記憶體，全交由 Swap 處理 (否則 Docker 會主動 Kill 掉)
+    volumes:
+      # 為了不讓映像檔過於肥大，強烈建議將您本地的 .pth 模型檔直接放進以下對應目錄中
+      # 等號左邊是宿主機路徑(需包含模型)，等號右邊是容器內系統路徑
+      - ./backend/app/resources:/app/app/resources
+
+  # 前端: Vue 靜態檔 + Nginx 反向代理 (公開連接埠 80)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: accompartner_frontend
+    restart: always
+    ports:
+      - "80:80" # 對外開放機器的 Port 80
+    depends_on:
+      - backend # 確保後端先啟動
