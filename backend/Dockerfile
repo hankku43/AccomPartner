@@ -16,9 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # 安裝 Python 依賴
-# (在 ARM 架構下，pip 預設會下載相容於 aarch64 的 CPU 版本 PyTorch)
+# (極度重要: 加上 --extra-index-url 強制下載沒有 CUDA 的純 CPU 版本，節省數 GB 的空間)
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
 # 複製應用內容 (注意: 部署時不應將模型權重包進 Image，應透過 volume 掛載，但此處為求無腦啟動先全部複製)
 COPY . .
