@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
-from typing import List
+from typing import List, Union
+from pydantic import field_validator
 
 
 class Settings(BaseSettings):
@@ -12,10 +13,17 @@ class Settings(BaseSettings):
     default_bpm: int = 120
 
     # CORS
-    allowed_origins: List[str] = [
+    allowed_origins: Union[List[str], str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ]
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> Union[List[str], str]:
+        if isinstance(v, str) and not v.startswith("["):
+            return [i.strip() for i in v.split(",")]
+        return v
 
     class Config:
         env_file = ".env"
