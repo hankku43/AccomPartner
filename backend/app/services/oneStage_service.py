@@ -315,7 +315,7 @@ def _generate_window(
 
 def _run_inference(
     melody_midi_bytes: bytes, complexity: float = 0.5, creativity: float = 1.0
-) -> bytes:
+) -> tuple[bytes, list[str]]:
     """
     完整推理流程：
       1. 將 bytes 寫入暫存檔
@@ -498,7 +498,7 @@ def _run_inference(
         try:
             combined.dump_midi(out_path)
             with open(out_path, "rb") as f:
-                return f.read()
+                return f.read(), []
         finally:
             if os.path.exists(out_path):
                 os.remove(out_path)
@@ -515,7 +515,7 @@ def _run_inference(
 
 async def generate(
     melody_midi_bytes: bytes, complexity: float = 0.5, creativity: float = 1.0
-) -> bytes:
+) -> tuple[bytes, list[str]]:
     """
     使用 oneStage (norm_false) 模型為旋律生成伴奏，回傳雙軌 MIDI bytes。
 
@@ -525,7 +525,7 @@ async def generate(
         creativity:        創意程度（預設 1.0，越低越穩定）
 
     Returns:
-        雙軌 MIDI bytes（旋律軌 + 伴奏軌）
+        雙軌 MIDI bytes（旋律軌 + 伴奏軌）及空氣和弦清單
     """
     return await asyncio.to_thread(
         _run_inference, melody_midi_bytes, complexity, creativity

@@ -44,11 +44,13 @@ async def generate_from_json(req: GenerateFromJsonRequest) -> bytes:
     service_fn = get_service(req.mode)
     logger.info(
         "JSON 推理請求: mode=%s, complexity=%.2f, creativity=%.2f",
-        req.mode, req.complexity, req.creativity
+        req.mode,
+        req.complexity,
+        req.creativity,
     )
 
     try:
-        result_midi = await service_fn(
+        result_midi, _ = await service_fn(
             melody_midi, complexity=req.complexity, creativity=req.creativity
         )
     except Exception as e:
@@ -63,7 +65,7 @@ async def generate_from_midi(
     mode: str,
     complexity: float = 0.5,
     creativity: float = 1.0,
-) -> bytes:
+) -> tuple[bytes, list[list[str]]]:
     """
     流程：
       1. 讀取上傳的 MIDI 檔案 bytes
@@ -96,13 +98,17 @@ async def generate_from_midi(
     service_fn = get_service(mode)
     logger.info(
         "MIDI 推理請求: mode=%s, complexity=%.2f, creativity=%.2f",
-        mode, complexity, creativity
+        mode,
+        complexity,
+        creativity,
     )
 
     try:
-        result_midi = await service_fn(melody_midi, complexity=complexity, creativity=creativity)
+        result_midi, chords_list = await service_fn(
+            melody_midi, complexity=complexity, creativity=creativity
+        )
     except Exception as e:
         logger.error("模型推理失敗：%s\n%s", e, traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"模型推理失敗：{e}")
 
-    return result_midi
+    return result_midi, chords_list

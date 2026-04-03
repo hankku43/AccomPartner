@@ -172,7 +172,7 @@ def _detect_key_offset(midi_path: str) -> tuple[int, int]:
     tonic_name = detected.tonic.name
     mode = detected.mode
     logger.info("調性分析結果：%s %s", tonic_name, mode)
-    
+
     key_map = KEY_MAP_MINOR if mode == "minor" else KEY_MAP_MAJOR
     offset = key_map.get(tonic_name, 0)
     logger.info("轉調偏移：至 C=%+d, 還原=%+d", offset, -offset)
@@ -264,10 +264,10 @@ def _get_stage2() -> tuple[POP909Transformer, REMI, dict]:
         ).to(DEVICE)
         m.load_state_dict(state)
         m.eval()
-        
-        epoch = ckpt.get('epoch', '?')
+
+        epoch = ckpt.get("epoch", "?")
         logger.info("Stage 2 模型載入完成。Epoch=%s, 裝置=%s", epoch, DEVICE)
-        
+
         _stage2_model = m
         _stage2_tokenizer = tokenizer
         _stage2_chord_to_id = chord_to_id
@@ -308,7 +308,7 @@ def _get_stage1(predictor_type: str) -> tuple[POP909ChordPredictor, dict, int, i
         cm = POP909ChordPredictor(src_vocab_size, tgt_vocab_size).to(DEVICE)
         cm.load_state_dict(state)
         cm.eval()
-        
+
         logger.info("Stage 1 (%s) 載入完成。裝置=%s", predictor_type, DEVICE)
 
         _stage1_cache[predictor_type] = (cm, chord_to_id, bos_id, eos_id)
@@ -586,7 +586,7 @@ def _run_inference(
     predictor_type: Literal["std", "bar", "nar"],
     complexity: float = 0.5,
     creativity: float = 1.0,
-) -> bytes:
+) -> tuple[bytes, list[str]]:
     # ── 載入模型 ──────────────────────────────────────────────────────────────
     stage2_model, tokenizer, stage2_chord_to_id = _get_stage2()
     chord_model, stage1_chord_to_id, chord_bos_id, chord_eos_id = _get_stage1(
@@ -601,7 +601,9 @@ def _run_inference(
     BAR_ID = vocab["Bar_None"]
 
     # ── 暫存 MIDI ──────────────────────────────────────────────────────────────
-    with tempfile.NamedTemporaryFile(suffix=".mid", prefix="accom_tmp_", delete=False) as f_in:
+    with tempfile.NamedTemporaryFile(
+        suffix=".mid", prefix="accom_tmp_", delete=False
+    ) as f_in:
         f_in.write(melody_midi_bytes)
         tmp_path = f_in.name
     logger.debug("旋律 MIDI 暫存於：%s", tmp_path)
@@ -617,9 +619,15 @@ def _run_inference(
         all_notes = sorted(orig_score.tracks[0].notes, key=lambda n: n.time)
         last_tick = max(n.time + n.duration for n in all_notes)
         total_bars = max(1, last_tick // ticks_per_bar)
-        
-        logger.info("MIDI 解析完成。TPQ=%d, 拍號=%d/%d, 總長度=%d 小節, 音符數=%d", 
-                    tpq, numerator, denominator, total_bars, len(all_notes))
+
+        logger.info(
+            "MIDI 解析完成。TPQ=%d, 拍號=%d/%d, 總長度=%d 小節, 音符數=%d",
+            tpq,
+            numerator,
+            denominator,
+            total_bars,
+            len(all_notes),
+        )
 
         # ── 調性分析 ────────────────────────────────────────────────────────────
         to_c_offset, back_offset = _detect_key_offset(tmp_path)
@@ -633,9 +641,15 @@ def _run_inference(
 
         acc_notes_all: list = []
         prefix_token_ids: list = []
+        final_chords_dict: dict[int, list[str]] = {}
 
         for w_idx, bar_start in enumerate(window_starts):
-            logger.info("處理視窗 %d/%d (起始小節: %d)", w_idx + 1, len(window_starts), bar_start)
+            logger.info(
+                "處理視窗 %d/%d (起始小節: %d)",
+                w_idx + 1,
+                len(window_starts),
+                bar_start,
+            )
             is_first = w_idx == 0
             bar_end = min(bar_start + WINDOW_BARS, total_bars)
             tick_start = bar_start * ticks_per_bar
@@ -681,6 +695,19 @@ def _run_inference(
                 stage2_chord_to_id.get(name, stage2_chord_to_id.get("N", 0))
                 for name in chord_names
             ]
+
+            # 每個小節儲存所有拍的和弦（去除尾綴），供前端做 run-length 去重顯示
+            bar_range = (
+                range(WINDOW_BARS) if is_first else range(PREFIX_BARS, WINDOW_BARS)
+            )
+            for b in bar_range:
+                bar_chords = []
+                for beat in range(steps_per_bar):
+                    idx = b * steps_per_bar + beat
+                    if idx < len(chord_names):
+                        bar_chords.append(chord_names[idx].split("_")[0])
+                final_chords_dict[bar_start + b] = bar_chords
+
             logger.debug("Stage 2 和弦 ID 數：%d", len(chords_ids))
 
             # ── Stage 2：生成伴奏 ──────────────────────────────────────────────
@@ -771,16 +798,29 @@ def _run_inference(
         combined.tracks.append(acc_track)
 
         acc_end = max(n.time + n.duration for n in acc_notes_all)
-        mel_end = max(n.time + n.duration for n in mel_track.notes) if mel_track.notes else 0
-        logger.info("伴奏生成完成。總音符數=%d, 旋律結束 tick=%d, 伴奏結束 tick=%d", 
-                    len(acc_notes_all), mel_end, acc_end)
+        mel_end = (
+            max(n.time + n.duration for n in mel_track.notes) if mel_track.notes else 0
+        )
+        logger.info(
+            "伴奏生成完成。總音符數=%d, 旋律結束 tick=%d, 伴奏結束 tick=%d",
+            len(acc_notes_all),
+            mel_end,
+            acc_end,
+        )
 
-        with tempfile.NamedTemporaryFile(suffix=".mid", prefix="accom_tmp_", delete=False) as f_out:
+        with tempfile.NamedTemporaryFile(
+            suffix=".mid", prefix="accom_tmp_", delete=False
+        ) as f_out:
             out_path = f_out.name
         try:
             combined.dump_midi(out_path)
             with open(out_path, "rb") as f:
-                return f.read()
+                midi_b = f.read()
+
+            sorted_chord_list = [
+                final_chords_dict.get(i, []) for i in range(total_bars)
+            ]
+            return midi_b, sorted_chord_list
         finally:
             if os.path.exists(out_path):
                 os.remove(out_path)
@@ -797,7 +837,7 @@ def _run_inference(
 
 async def generate_std(
     melody_midi_bytes: bytes, complexity: float = 0.5, creativity: float = 1.0
-) -> bytes:
+) -> tuple[bytes, list[list[str]]]:
     """Standard AR 和弦預測器 (pop909_chord_predictor)。"""
     return await asyncio.to_thread(
         _run_inference, melody_midi_bytes, "std", complexity, creativity
@@ -806,7 +846,7 @@ async def generate_std(
 
 async def generate_bar(
     melody_midi_bytes: bytes, complexity: float = 0.5, creativity: float = 1.0
-) -> bytes:
+) -> tuple[bytes, list[list[str]]]:
     """Bar-level AR 和弦預測器 (pop909_chord_predictor_bar)。"""
     return await asyncio.to_thread(
         _run_inference, melody_midi_bytes, "bar", complexity, creativity
@@ -815,7 +855,7 @@ async def generate_bar(
 
 async def generate_nar(
     melody_midi_bytes: bytes, complexity: float = 0.5, creativity: float = 1.0
-) -> bytes:
+) -> tuple[bytes, list[list[str]]]:
     """NAR 和弦預測器 (pop909_chord_predictor_nar)。"""
     return await asyncio.to_thread(
         _run_inference, melody_midi_bytes, "nar", complexity, creativity

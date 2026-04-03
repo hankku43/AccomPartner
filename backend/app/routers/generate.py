@@ -11,7 +11,8 @@ Router 層只負責：
 """
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
+import base64
 
 from app.controllers import generate_controller
 from app.core.config import Settings, get_settings
@@ -99,17 +100,19 @@ async def generate_from_midi(
     Response:
       - 二進位 MIDI 檔案（Content-Type: audio/midi）
     """
-    midi_bytes = await generate_controller.generate_from_midi(
+    midi_bytes, chords_list = await generate_controller.generate_from_midi(
         file=midiFile,
         target_track_index=targetTrackIndex,
         mode=mode,
         complexity=complexity,
         creativity=creativity,
     )
-    return Response(
-        content=midi_bytes,
-        media_type="audio/midi",
-        headers={
-            "Content-Disposition": "attachment; filename=melody_with_accompaniment.mid"
-        },
+    
+    encoded_midi = base64.b64encode(midi_bytes).decode('utf-8')
+    
+    return JSONResponse(
+        content={
+            "midi_b64": encoded_midi,
+            "chords": chords_list
+        }
     )

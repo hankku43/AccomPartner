@@ -173,3 +173,4 @@ class MidiTokenizer {
 }
 
 export const tokenizerService = new MidiTokenizer();
+export default tokenizerService;

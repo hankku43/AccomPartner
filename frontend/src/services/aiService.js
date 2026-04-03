@@ -42,42 +42,45 @@ class AccompanimentAI {
     /**
      * 預測下一小節的伴奏
      * @param {Array<number>} currentBarTokenIds - 前端轉換好的整數陣列
+     * @param {Object} options - 推論參數 (temperature, topP)
      * @returns {Promise<Array<number>>} - 生成的下一小節 Token 陣列
      */
-    async generateNextBar(currentBarTokenIds) {
+    async generateNextBar(currentBarTokenIds, options = {}) {
+        const { temperature = 1.0, topP = 0.9 } = options;
+        
         if (!this.isReady) {
             console.warn("⚠️ 模型尚未載入完成，請稍候。");
             return [];
         }
 
-        console.log("🧠 AI 思考中... 輸入長度:", currentBarTokenIds.length);
+        console.log(`🧠 AI 思考中... [Temp: ${temperature}, TopP: ${topP}] 輸入長度: ${currentBarTokenIds.length}`);
         const startTime = performance.now();
 
         try {
             const seqLen = currentBarTokenIds.length;
 
-            // 1. 建立 input_ids 張量 (轉為 64位元整數)
+            // 1. 建立 input_ids 張量
             const inputIds = new Tensor(
                 'int64', 
                 new BigInt64Array(currentBarTokenIds.map(id => BigInt(id))), 
                 [1, seqLen]
             );
 
-            // 🌟 2. 建立 attention_mask 張量 (全部填 1，告訴模型每一個 Token 都要注意)
+            // 2. 建立 attention_mask 張量
             const maskData = new BigInt64Array(seqLen);
             maskData.fill(1n);
             const attentionMask = new Tensor('int64', maskData, [1, seqLen]);
 
-            // 3 & 4. 將「輸入張量」與「推論參數」合併成單一個大 Object 傳入
+            // 3 & 4. 設定推論參數
             const generationKwargs = {
                 input_ids: inputIds,
                 attention_mask: attentionMask,
-                max_new_tokens: 512,     // 🌟 這次絕對不會被忽略了
-                temperature: 1.0,       
+                max_new_tokens: 512,
+                temperature: temperature,       
                 top_k: 50,              
-                top_p: 0.9,             
+                top_p: topP,             
                 do_sample: true,
-                repetition_penalty: 1.2, // 降低重複按同一個音的機率
+                repetition_penalty: 1.2,
                 pad_token_id: 0,        
                 bos_token_id: 1,        
                 eos_token_id: 2,       
@@ -113,3 +116,4 @@ class AccompanimentAI {
 
 // 導出一個單一實例 (Singleton)，確保全站共用同一個模型記憶體
 export const aiService = new AccompanimentAI();
+export default aiService;

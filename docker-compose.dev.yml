@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  # 後端: 保持原有設置，但開放 8000 埠以便本地測試
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: accompartner_backend_dev
+    restart: always
+    ports:
+      - "8000:8000" # 對外開放，本地測試更方便
+    environment:
+      - MODEL_DIR=/app/app/resources
+      - ALLOWED_ORIGINS=*
+    volumes:
+      - ./backend/app/resources:/app/app/resources
+
+  # 前端: 開發模式，掛載原始碼並支援熱重載 (HMR)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev # 使用開發專用的 Dockerfile
+    container_name: accompartner_frontend_dev
+    restart: always
+    ports:
+      - "5173:5173" # 使用 Vite 的預設 Port
+    volumes:
+      - ./frontend:/app # 重要：掛載整個開發目錄
+      - /app/node_modules # 防止本地 node_modules 覆蓋容器內安裝的版本
+    depends_on:
+      - backend

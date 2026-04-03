@@ -24,12 +24,16 @@ export default defineConfig({
     },
   },
   server: {
-    // 開發時將 /api/* 請求轉發至 FastAPI 後端
+    host: true,
+    // 開發時將 /api/* 請求轉發至 FastAPI 後端 (Docker 內部名稱為 backend)
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: 'http://backend:8000',
         changeOrigin: true,
       },
+    },
+    hmr: {
+      clientPort: 5173,
     },
   },
 })
