@@ -40,7 +40,7 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
-*,cover
+*.cover
 .hypothesis/
 
 # Translations
@@ -48,7 +48,6 @@ coverage.xml
 *.pot
 
 # Django stuff:
-*.log
 local_settings.py
 
 # Flask stuff:
@@ -102,11 +101,9 @@ venv.bak/
 .pytest_cache/
 
 # Coverage
-.coverage
 htmlcov/
 
 # Machine Learning / Data Science
-.ipynb_checkpoints/
 mlruns/
 
 # Node.js
@@ -143,5 +140,13 @@ backend/.env
 backend/.env.local
 frontend/.env
 frontend/.env.local
+
+# Model weights（避免大型模型檔被意外 commit）
+backend/app/resources/
+**/*.pt
+**/*.pth
+**/*.onnx
+**/*.bin
+
 .DS_Store
 Thumbs.db

@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 [您的英文名字/專案擁有者]
+Copyright (c) 2026 AccomPartner Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -24,5 +24,15 @@ SOFTWARE.
 
 ## 關於第三方套件授權 (About Third-Party Licenses)
 
-本專案使用以下第三方套件，詳細授權資訊請參閱專案目錄下的 `THIRD_PARTY_LICENSES.md`。
+本專案使用多項第三方開源套件，詳細授權資訊請參閱 `THIRD_PARTY_LICENSES.md`。
 This project uses several third-party libraries. Please refer to `THIRD_PARTY_LICENSES.md` for detailed licensing information.
+
+---
+
+## 關於訓練資料 (About Training Data)
+
+本模型訓練於 **POP909 Dataset**，該資料集僅授權用於非商業及學術研究用途。
+若您將本專案用於任何商業目的，請確認您所使用的訓練資料符合其原始授權條款。
+
+The model was trained on the **POP909 Dataset**, which is licensed for non-commercial and academic research use only.
+If you use this project for any commercial purpose, please ensure your training data complies with its original license terms.
