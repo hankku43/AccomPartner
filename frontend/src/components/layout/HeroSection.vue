@@ -214,29 +214,84 @@ onMounted(() => {
   font-weight: 700;
   cursor: pointer;
   border: none;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease;
   font-family: 'Outfit', sans-serif;
 }
 
 .primary-btn-glow {
-  background: #2c3e50;
+  background: linear-gradient(135deg, #4e54c8 0%, #8f94fb 60%, #ff6a88 100%);
+  background-size: 200% auto;
   color: white;
-  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+  box-shadow:
+    0 8px 24px rgba(78, 84, 200, 0.35),
+    0 2px 8px rgba(0, 0, 0, 0.1);
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease,
+    background-position 0.4s ease;
 }
 .primary-btn-glow:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 15px 30px rgba(44, 62, 80, 0.2);
+  transform: translateY(-3px);
+  background-position: right center;
+  box-shadow:
+    0 14px 36px rgba(78, 84, 200, 0.45),
+    0 0 0 4px rgba(143, 148, 251, 0.18),
+    0 4px 12px rgba(255, 106, 136, 0.2);
+}
+.primary-btn-glow:active {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(78, 84, 200, 0.35);
 }
 
 .secondary-btn {
   background: white;
   color: #2c3e50;
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
-  border: 1px solid #eee;
+  border: 1.5px solid rgba(78, 84, 200, 0.18);
+  position: relative;
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease,
+    color 0.25s ease,
+    border-color 0.25s ease;
+  z-index: 0;
+}
+.secondary-btn::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 30px;
+  background: linear-gradient(135deg, #4e54c8, #8f94fb, #ff6a88);
+  opacity: 0;
+  z-index: -1;
+  transition: opacity 0.3s ease;
+}
+.secondary-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 28px;
+  background: white;
+  z-index: -1;
+  transition: background 0.25s ease;
 }
 .secondary-btn:hover {
-  background: #f8f9fa;
-  transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+  transform: translateY(-3px);
+  color: #4e54c8;
+  border-color: transparent;
+  box-shadow:
+    0 10px 28px rgba(78, 84, 200, 0.15),
+    0 0 0 1.5px rgba(143, 148, 251, 0.3);
+}
+.secondary-btn:hover::before {
+  opacity: 1;
+}
+.secondary-btn:hover::after {
+  background: rgba(248, 248, 255, 0.95);
+}
+.secondary-btn:active {
+  transform: translateY(-1px);
 }
 </style>

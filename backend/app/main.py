@@ -10,6 +10,8 @@ FastAPI 應用程式入口點。
   4. 註冊所有路由器
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -24,6 +26,16 @@ from app.routers import generate
 
 settings = get_settings()
 
+
+# ── Lifespan（取代棄用的 @app.on_event）────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup：啟動非同步背景清理任務，確保長期運行時磁碟空間不被塞爆
+    asyncio.create_task(start_cleanup_task())
+    yield
+    # Shutdown：如需清理資源可在此加入邏輯
+
+
 app = FastAPI(
     title="AI 伴奏生成實驗室 API",
     description=(
@@ -33,6 +45,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # ── Rate Limiter ─────────────────────────────────────────────────────────────
@@ -54,7 +67,3 @@ app.add_middleware(
 # ── 路由器 ───────────────────────────────────────────────────────────────────
 app.include_router(generate.router)
 
-@app.on_event("startup")
-async def startup_event():
-    # 啟動非同步背景清理任務，確保長期運行時磁碟空間不被塞爆
-    asyncio.create_task(start_cleanup_task())

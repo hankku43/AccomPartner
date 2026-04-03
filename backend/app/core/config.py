@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 from typing import List, Union
 from pydantic import field_validator
@@ -25,9 +25,11 @@ class Settings(BaseSettings):
             return [i.strip() for i in v.split(",")]
         return v
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # pydantic-settings v2 推薦寫法（取代棄用的 class Config）
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
 
 
 @lru_cache()

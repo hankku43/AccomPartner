@@ -388,7 +388,7 @@ const safeBPMWithAnim = ref(100)
 const absoluteMaxBPM = ref(100)
 const calibrationSummary = ref({ avg: 0, std: 0, autoDisabledAnim: false, lowSafeBPM: false })
 const aiCreativity = ref(100) // 創造力: 50~200 (對應 0.5~2.0)
-const aiComplexity = ref(80) // 複雜度: 10~100 (對應 0.55~1.0)
+const aiComplexity = ref(50) // 複雜度: 10~100 (對應 0.55~1.0)
 const selectedBaseStyle = ref('soft') // 起始風格 (soft/light/grave)
 
 // 🌟 預定義風格資料 (單位: Position 0~15, Duration in Ticks 1~16)
@@ -559,11 +559,21 @@ const initToneJs = async () => {
   await audioService.init()
   await tokenizerService.init()
   await aiService.init()
-  // 初始化設定音量
-  if (audioService.melodySynth)
-    audioService.melodySynth.volume.value = Tone.gainToDb(userVolume.value / 100)
-  if (audioService.accSynth)
-    audioService.accSynth.volume.value = Tone.gainToDb(aiVolume.value / 100)
+
+  // 初始化設定音量：補上 * 2.5 增益補償，保持與 watch 邏輯一致
+  if (audioService.melodySynth) {
+    audioService.melodySynth.volume.value = Tone.gainToDb((userVolume.value / 100) * 2.5)
+  }
+  if (audioService.accSynth) {
+    audioService.accSynth.volume.value = Tone.gainToDb((aiVolume.value / 100) * 2.5)
+  }
+
+  // 補上節拍器與鼓組的初始音量設定
+  const metroGain = (metroVolume.value / 100) * 2.5
+  if (audioService.metronome) audioService.metronome.volume.value = Tone.gainToDb(metroGain)
+  if (audioService.kickSynth) audioService.kickSynth.volume.value = Tone.gainToDb(metroGain)
+  if (audioService.hatSynth) audioService.hatSynth.volume.value = Tone.gainToDb(metroGain)
+  if (audioService.snareSynth) audioService.snareSynth.volume.value = Tone.gainToDb(metroGain)
 }
 
 const triggerKeyStart = (key) => {
@@ -699,10 +709,41 @@ const drawRealtimeVisualizer = () => {
         const nh = (note.end - note.start) * pps
         const xOffset = getPianoKeyX(note.midi)
         const kw = getVisualizerKeyWidth(note.midi)
+        const x = xOffset + 1
+        const noteW = kw - 2
+        const r = Math.min(4, noteW / 2)
 
-        ctx.fillStyle = '#5fe3a1'
-        ctx.shadowColor = ctx.fillStyle
-        ctx.fillRect(xOffset + 1, yOffset, kw - 2, nh)
+        // Gradient fill for note bar
+        const grad = ctx.createLinearGradient(x, yOffset, x + noteW, yOffset + nh)
+        grad.addColorStop(0, 'rgba(120, 255, 195, 0.95)')
+        grad.addColorStop(0.5, 'rgba(95, 227, 161, 0.9)')
+        grad.addColorStop(1, 'rgba(50, 180, 130, 0.7)')
+
+        ctx.shadowBlur = 18
+        ctx.shadowColor = 'rgba(95, 227, 161, 0.7)'
+
+        ctx.beginPath()
+        ctx.moveTo(x + r, yOffset)
+        ctx.lineTo(x + noteW - r, yOffset)
+        ctx.quadraticCurveTo(x + noteW, yOffset, x + noteW, yOffset + r)
+        ctx.lineTo(x + noteW, yOffset + nh - r)
+        ctx.quadraticCurveTo(x + noteW, yOffset + nh, x + noteW - r, yOffset + nh)
+        ctx.lineTo(x + r, yOffset + nh)
+        ctx.quadraticCurveTo(x, yOffset + nh, x, yOffset + nh - r)
+        ctx.lineTo(x, yOffset + r)
+        ctx.quadraticCurveTo(x, yOffset, x + r, yOffset)
+        ctx.closePath()
+        ctx.fillStyle = grad
+        ctx.fill()
+
+        // Bright top edge highlight
+        ctx.shadowBlur = 0
+        ctx.strokeStyle = 'rgba(180, 255, 220, 0.8)'
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.moveTo(x + r, yOffset + 0.5)
+        ctx.lineTo(x + noteW - r, yOffset + 0.5)
+        ctx.stroke()
       }
     } else {
       const duration = note.end - note.start
@@ -735,19 +776,46 @@ const drawRealtimeVisualizer = () => {
         const currentRadius = progress * maxRadius
         const alpha = 1 - Math.pow(progress, 1.5)
 
+        // Outer glow ring
+        ctxAi.shadowBlur = 20
+        ctxAi.shadowColor = `rgba(143, 148, 251, ${alpha * 0.6})`
         ctxAi.beginPath()
         ctxAi.arc(centerX, centerY, currentRadius, 0, Math.PI * 2)
-        ctxAi.strokeStyle = `rgba(143, 148, 251, ${alpha})`
-        ctxAi.lineWidth = 2 + (1 - progress) * 4
+        ctxAi.strokeStyle = `rgba(180, 185, 255, ${alpha * 0.9})`
+        ctxAi.lineWidth = 2.5 + (1 - progress) * 3
         ctxAi.stroke()
+        ctxAi.shadowBlur = 0
 
-        if (progress > 0.15) {
-          const innerRadius = Math.max(0, (progress - 0.15) * maxRadius)
+        // Second ring (slightly delayed)
+        if (progress > 0.08) {
+          const ring2R = Math.max(0, (progress - 0.08) * maxRadius)
           ctxAi.beginPath()
-          ctxAi.arc(centerX, centerY, innerRadius, 0, Math.PI * 2)
-          ctxAi.strokeStyle = `rgba(143, 148, 251, ${alpha * 0.5})`
-          ctxAi.lineWidth = 1 + (1 - progress) * 2
+          ctxAi.arc(centerX, centerY, ring2R, 0, Math.PI * 2)
+          ctxAi.strokeStyle = `rgba(120, 130, 255, ${alpha * 0.55})`
+          ctxAi.lineWidth = 1.5 + (1 - progress) * 2
           ctxAi.stroke()
+        }
+
+        // Third inner ring
+        if (progress > 0.22) {
+          const ring3R = Math.max(0, (progress - 0.22) * maxRadius)
+          ctxAi.beginPath()
+          ctxAi.arc(centerX, centerY, ring3R, 0, Math.PI * 2)
+          ctxAi.strokeStyle = `rgba(200, 200, 255, ${alpha * 0.25})`
+          ctxAi.lineWidth = 1
+          ctxAi.stroke()
+        }
+
+        // Soft center dot at birth
+        if (progress < 0.25) {
+          const dotAlpha = (1 - progress / 0.25) * alpha
+          const radGrad = ctxAi.createRadialGradient(centerX, centerY, 0, centerX, centerY, 18)
+          radGrad.addColorStop(0, `rgba(220, 220, 255, ${dotAlpha * 0.8})`)
+          radGrad.addColorStop(1, `rgba(143, 148, 251, 0)`)
+          ctxAi.beginPath()
+          ctxAi.arc(centerX, centerY, 18, 0, Math.PI * 2)
+          ctxAi.fillStyle = radGrad
+          ctxAi.fill()
         }
       }
     }
@@ -759,9 +827,30 @@ const drawRealtimeVisualizer = () => {
       const nh = (now - val.startTime) * pps
       const xOffset = getPianoKeyX(val.midi)
       const kw = getVisualizerKeyWidth(val.midi)
-      ctx.fillStyle = '#5fe3a1'
-      ctx.shadowColor = '#5fe3a1'
-      ctx.fillRect(xOffset + 1, yOffset, kw - 2, nh)
+      const x = xOffset + 1
+      const noteW = kw - 2
+      const r = Math.min(4, noteW / 2)
+
+      const grad = ctx.createLinearGradient(x, yOffset, x + noteW, yOffset + nh)
+      grad.addColorStop(0, 'rgba(160, 255, 210, 0.98)')
+      grad.addColorStop(0.4, 'rgba(95, 227, 161, 0.92)')
+      grad.addColorStop(1, 'rgba(40, 170, 120, 0.75)')
+
+      ctx.shadowBlur = 22
+      ctx.shadowColor = 'rgba(95, 227, 161, 0.85)'
+
+      ctx.beginPath()
+      ctx.moveTo(x + r, yOffset)
+      ctx.lineTo(x + noteW - r, yOffset)
+      ctx.quadraticCurveTo(x + noteW, yOffset, x + noteW, yOffset + r)
+      ctx.lineTo(x + noteW, yOffset + nh)
+      ctx.lineTo(x, yOffset + nh)
+      ctx.lineTo(x, yOffset + r)
+      ctx.quadraticCurveTo(x, yOffset, x + r, yOffset)
+      ctx.closePath()
+      ctx.fillStyle = grad
+      ctx.fill()
+      ctx.shadowBlur = 0
     })
   }
 }
@@ -1225,11 +1314,14 @@ const buildSafeMeasure = (sourceNotes, barIndex, clefType, isAI = false) => {
       const defaultKey = clefType === 'treble' ? 'b/4' : 'd/3'
       const rest = new StaveNote({ clef: clefType, keys: [defaultKey], duration: rStr })
 
-      // 💡 將 AI 的休止符設為透明，避免畫面雜亂；使用者的休止符稍微調暗
+      // 💡 將 AI 的休止符設為透明，避免畫面雜亂；使用者的休止符用半透明白色
       if (isAI) {
-        rest.setStyle({ fillStyle: 'transparent', strokeStyle: 'transparent' })
+        rest.setStyle({ fillStyle: 'rgba(0,0,0,0)', strokeStyle: 'rgba(0,0,0,0)' })
       } else {
-        rest.setStyle({ fillStyle: '#888', strokeStyle: '#888' })
+        rest.setStyle({
+          fillStyle: 'rgba(210, 210, 230, 0.3)',
+          strokeStyle: 'rgba(210, 210, 230, 0.3)',
+        })
       }
 
       measureNotes.push(rest)
@@ -1258,6 +1350,11 @@ const renderRealtimeStaff = () => {
   renderer.resize(CLEF_WIDTH + numBars * MEASURE_WIDTH + 10, 170)
   const ctx = renderer.getContext()
 
+  // 🎨 設定五線譜顏色：譜線、譜號、拍號用柔和的白色
+  ctx.setStrokeStyle('rgba(210, 210, 230, 0.75)')
+  ctx.setFillStyle('rgba(210, 210, 230, 0.75)')
+  ctx.setLineWidth(1.1)
+
   // 🌟 優化：x 從 0 改為 25，寬度從 80 改為 85 (25+85=110)
   const trebleClef = new Stave(25, TREBLE_Y, 85)
     .addClef('treble')
@@ -1277,6 +1374,8 @@ const renderRealtimeStaff = () => {
   trebleClef.draw()
   bassClef.draw()
 
+  ctx.setStrokeStyle('rgba(210, 210, 230, 0.75)')
+  ctx.setFillStyle('rgba(210, 210, 230, 0.75)')
   new StaveConnector(trebleClef, bassClef).setType(StaveConnector.type.BRACE).setContext(ctx).draw()
   new StaveConnector(trebleClef, bassClef)
     .setType(StaveConnector.type.SINGLE_LEFT)
@@ -1293,6 +1392,9 @@ const renderRealtimeStaff = () => {
     const barIndex = startBar + i
     const offsetX = CLEF_WIDTH + i * MEASURE_WIDTH
 
+    // 每個小節維持相同顏色設定
+    ctx.setStrokeStyle('rgba(210, 210, 230, 0.75)')
+    ctx.setFillStyle('rgba(210, 210, 230, 0.75)')
     const tStave = new Stave(offsetX, TREBLE_Y, MEASURE_WIDTH).setContext(ctx)
     const bStave = new Stave(offsetX, BASS_Y, MEASURE_WIDTH).setContext(ctx)
 
@@ -1335,6 +1437,8 @@ const renderRealtimeStaff = () => {
     tVoiceUser.draw(ctx, tStave)
     bVoiceAI.draw(ctx, bStave)
 
+    ctx.setStrokeStyle('rgba(210, 210, 230, 0.75)')
+    ctx.setFillStyle('rgba(210, 210, 230, 0.75)')
     new StaveConnector(tStave, bStave)
       .setType(StaveConnector.type.SINGLE_RIGHT)
       .setContext(ctx)
@@ -1348,7 +1452,7 @@ const initStaffLayout = () => {
   if (w < 1130) initCount = 2
   else if (w < 1545) initCount = 2
   else if (w < 1700) initCount = 3
-  
+
   visibleBarCount.value = initCount
 }
 
@@ -1369,12 +1473,29 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 沉浸式整體佈局 */
+/* ── 全域 CSS 變數 ─────────────────── */
+.immersive-layout,
+.modal-overlay {
+  --rt-bg-deep: #09090f;
+  --rt-bg-panel: rgba(13, 13, 22, 0.82);
+  --rt-border: rgba(255, 255, 255, 0.07);
+  --rt-border-accent: rgba(143, 148, 251, 0.25);
+  --rt-accent: #8f94fb;
+  --rt-accent-green: #5fe3a1;
+  --rt-accent-green-dim: rgba(95, 227, 161, 0.15);
+  --rt-text-primary: rgba(240, 240, 255, 0.92);
+  --rt-text-secondary: rgba(180, 180, 210, 0.65);
+  --rt-text-muted: rgba(120, 120, 160, 0.55);
+  --rt-radius: 14px;
+  --rt-radius-sm: 8px;
+}
+
+/* ── 沉浸式整體佈局 ─────────────────── */
 .immersive-layout {
   display: flex;
-  height: calc(100vh - 100px); /* 扣除可能的 NavBar 空間 */
+  height: calc(100vh - 100px);
   min-height: 700px;
-  gap: 20px;
+  gap: 16px;
   padding: 0 !important;
   background: transparent !important;
   border: none !important;
@@ -1382,31 +1503,46 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* 左側邊欄 */
+/* ── 左側邊欄 ─────────────────── */
 .sidebar {
-  flex: 0 0 320px;
+  flex: 0 0 310px;
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  height: auto; /* 讓內容決定高度 */
-  max-height: 100%; /* 不過高於父容器 */
-  margin-bottom: 5px; /* 留一點空間給底部圓角 */
+  height: auto;
+  max-height: 100%;
+  margin-bottom: 5px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(143, 148, 251, 0.2) transparent;
+}
+.sidebar::-webkit-scrollbar {
+  width: 4px;
+}
+.sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar::-webkit-scrollbar-thumb {
+  background: rgba(143, 148, 251, 0.25);
+  border-radius: 2px;
 }
 
-/* 右側主舞台 */
+/* ── 右側主舞台 ─────────────────── */
 .main-stage {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: rgba(0, 0, 0, 0.4);
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(160deg, rgba(12, 12, 20, 0.97) 0%, rgba(8, 8, 16, 1) 100%);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
   overflow: hidden;
   position: relative;
-  align-items: center; /* 讓 1120px 容器置中 */
+  align-items: center;
+  box-shadow:
+    0 0 80px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-/* 🌟 核心：對齊校準容器 */
+/* ── 核心：對齊校準容器 ─────────────────── */
 .stage-inner-wrapper {
   width: 100%;
   display: flex;
@@ -1416,22 +1552,30 @@ onUnmounted(() => {
   flex: 1;
 }
 
-/* 共用 Glass Panel (左側使用) */
+/* ── Glass Panel (左側使用) ─────────────────── */
 .glass-panel {
-  background: rgba(20, 20, 30, 0.7);
-  backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 16px;
-  padding: 20px;
+  background: rgba(13, 13, 22, 0.82);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow:
+    0 4px 32px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
-/* 控制區域段落 */
+/* ── 控制區域段落 ─────────────────── */
 .control-section {
-  background: rgba(255, 255, 255, 0.03);
-  border-radius: 12px;
-  padding: 10px 15px 15px 15px;
-  margin-bottom: 15px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.022);
+  border-radius: 10px;
+  padding: 12px 14px 14px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.045);
+  transition: border-color 0.2s;
+}
+.control-section:hover {
+  border-color: rgba(143, 148, 251, 0.12);
 }
 .control-row-simple {
   display: flex;
@@ -1439,58 +1583,75 @@ onUnmounted(() => {
   gap: 8px;
 }
 .small-label {
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 700;
-  color: #7f8c8d;
+  color: rgba(120, 120, 160, 0.55);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.8px;
 }
 .mb-15 {
   margin-bottom: 15px;
 }
 .section-title {
-  margin: 0;
+  margin: 0 0 12px;
   color: #8f94fb;
-  font-size: 13px;
+  font-size: 10.5px;
   text-transform: uppercase;
-  letter-spacing: 1px;
-  margin-bottom: 15px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  padding-bottom: 5px;
+  letter-spacing: 1.5px;
+  font-weight: 700;
+  border-bottom: 1px solid rgba(143, 148, 251, 0.12);
+  padding-bottom: 7px;
+  opacity: 0.85;
 }
 
-/* 表單與控制件 */
+/* ── 表單與控制件 ─────────────────── */
 .control-row {
   display: flex;
-  gap: 30px;
+  gap: 10px;
+  align-items: flex-end;
 }
 .control-group {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
   flex: 1;
 }
 .control-group label {
-  color: #aaa;
-  font-size: 12px;
+  color: rgba(180, 180, 210, 0.65);
+  font-size: 11.5px;
+  letter-spacing: 0.2px;
 }
 .modern-input,
 .modern-select {
   width: 100%;
-  padding: 10px;
+  padding: 8px 8px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(0, 0, 0, 0.3);
-  color: #fff;
-  font-size: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(240, 240, 255, 0.92);
+  font-size: 13px;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
+  outline: none;
+  box-sizing: border-box;
+  min-width: 0;
+}
+.modern-input:focus,
+.modern-select:focus {
+  border-color: rgba(143, 148, 251, 0.45);
+  box-shadow: 0 0 0 3px rgba(143, 148, 251, 0.08);
+}
+.modern-select option {
+  background: #1a1a2e;
 }
 
-/* Mixer 控制區 (音量與靜音) */
+/* ── Mixer 控制區 ─────────────────── */
 .mixer-row {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 15px;
+  gap: 7px;
+  margin-bottom: 13px;
 }
 .mixer-row:last-child {
   margin-bottom: 0;
@@ -1501,59 +1662,75 @@ onUnmounted(() => {
   align-items: center;
 }
 .mixer-info label {
-  color: #ddd;
-  font-size: 13px;
+  color: rgba(240, 240, 255, 0.92);
+  font-size: 12.5px;
+  opacity: 0.85;
 }
 .mute-toggle {
   display: flex;
   align-items: center;
   gap: 5px;
 }
+.mute-toggle input[type='checkbox'] {
+  accent-color: #8f94fb;
+  width: 12px;
+  height: 12px;
+}
 .mute-toggle label {
-  font-size: 11px;
-  color: #888;
+  font-size: 10.5px;
+  color: rgba(120, 120, 160, 0.55);
   cursor: pointer;
+  letter-spacing: 0.3px;
 }
 .volume-slider {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.2);
+  height: 3px;
+  background: rgba(255, 255, 255, 0.1);
   border-radius: 2px;
   outline: none;
+  cursor: pointer;
 }
 .volume-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
-  background: #5fe3a1;
+  background: #8f94fb;
   cursor: pointer;
-  transition: 0.2s;
+  transition:
+    transform 0.15s,
+    box-shadow 0.15s;
+  box-shadow: 0 0 6px rgba(143, 148, 251, 0.5);
+}
+.volume-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+  box-shadow: 0 0 12px rgba(143, 148, 251, 0.8);
 }
 .volume-slider:disabled::-webkit-slider-thumb {
-  background: #666;
+  background: rgba(255, 255, 255, 0.2);
+  box-shadow: none;
 }
 
-/* 動畫開關區 */
+/* ── 動畫開關區 ─────────────────── */
 .anim-switches {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 .switch-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 .switch-row label {
-  color: #ccc;
-  font-size: 13px;
+  color: rgba(180, 180, 210, 0.65);
+  font-size: 12.5px;
   cursor: pointer;
 }
 
-/* 狀態面板 */
+/* ── 狀態面板 ─────────────────── */
 .status-row {
   display: flex;
   justify-content: space-between;
@@ -1595,16 +1772,19 @@ onUnmounted(() => {
 .value-label {
   font-size: 11px;
   color: #8f94fb;
-  font-weight: bold;
+  font-weight: 700;
+  opacity: 0.9;
 }
 .accent-purple::-webkit-slider-thumb {
   background: #8f94fb !important;
+  box-shadow: 0 0 6px rgba(143, 148, 251, 0.5) !important;
 }
 .accent-blue::-webkit-slider-thumb {
-  background: #5fe3a1 !important;
+  background: #8f94fb !important;
+  box-shadow: 0 0 6px rgba(143, 148, 251, 0.5) !important;
 }
 
-/* 動作按鈕 */
+/* ── 動作按鈕 ─────────────────── */
 .w-100 {
   width: 100%;
 }
@@ -1615,36 +1795,56 @@ onUnmounted(() => {
   font-weight: 600;
   cursor: pointer;
   border: none;
-  transition: 0.2s;
+  transition:
+    transform 0.15s,
+    box-shadow 0.2s,
+    filter 0.15s;
+  letter-spacing: 0.3px;
+}
+.modern-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+}
+.modern-btn:active {
+  transform: translateY(0);
 }
 .btn-primary {
-  background: linear-gradient(135deg, #4e54c8, #8f94fb);
+  background: linear-gradient(135deg, #3d44b0 0%, #6b70e0 50%, #8f94fb 100%);
   color: white;
-  box-shadow: 0 4px 10px rgba(78, 84, 200, 0.3);
+  box-shadow:
+    0 4px 20px rgba(78, 84, 200, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
 .btn-large {
   padding: 14px 28px;
-  font-size: 16px;
+  font-size: 15.5px;
+  border-radius: 10px;
 }
 .btn-danger {
-  background: #e74c3c;
+  background: linear-gradient(135deg, #c0392b, #e74c3c);
   color: white;
+  box-shadow: 0 4px 16px rgba(231, 76, 60, 0.35);
 }
 .btn-outline {
   background: transparent;
-  border: 1px solid #555;
-  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(240, 240, 255, 0.92);
 }
 .btn-outline:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.25);
 }
 
-/* 主舞台 Canvas */
+/* ── 主舞台 Canvas 區域 ─────────────────── */
 .canvas-container {
-  height: 400px; /* 增加動畫寬容度 */
+  height: 400px;
   position: relative;
   width: 100%;
-  background: linear-gradient(180deg, #111 0%, #2a2a35 100%);
+  /* Layered dark gradient for depth */
+  background:
+    radial-gradient(ellipse at 20% 80%, rgba(95, 227, 161, 0.03) 0%, transparent 55%),
+    radial-gradient(ellipse at 80% 20%, rgba(143, 148, 251, 0.04) 0%, transparent 50%),
+    linear-gradient(180deg, #07070e 0%, #0e0e1a 60%, #131320 100%);
   flex: 1;
   display: flex;
   justify-content: center;
@@ -1658,13 +1858,14 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-/* 主舞台 鍵盤 */
+/* ── 主舞台 鍵盤 ─────────────────── */
 .stage-keyboard {
-  background: rgba(0, 0, 0, 0.6);
-  padding: 20px 0;
-  border-top: 2px solid rgba(255, 255, 255, 0.05);
-  border-bottom: 2px solid rgba(255, 255, 255, 0.05);
+  background: linear-gradient(180deg, rgba(5, 5, 12, 0.95) 0%, rgba(10, 10, 18, 0.98) 100%);
+  padding: 16px 0;
+  border-top: 1px solid rgba(143, 148, 251, 0.08);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.5);
   z-index: 10;
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.4);
 }
 .modern-keyboard {
   display: flex;
@@ -1679,70 +1880,109 @@ onUnmounted(() => {
   flex-direction: column;
   justify-content: flex-end;
   align-items: center;
-  padding-bottom: 12px;
+  padding-bottom: 10px;
   user-select: none;
   transition:
-    transform 0.1s,
-    background 0.1s;
+    transform 0.08s,
+    box-shadow 0.1s,
+    background 0.08s;
 }
 .piano-key.white-key {
-  width: 39px; /* JS getPianoKeyX 使用的寬度 */
+  width: 39px;
   height: 160px;
-  background: #ddd;
-  border: 1px solid #555;
+  background: linear-gradient(180deg, #e8e8e8 0%, #f5f5f5 30%, #ffffff 70%, #e0e0e0 100%);
+  border: 1px solid #888;
+  border-top: none;
   margin-right: 0;
   flex-shrink: 0;
-  border-radius: 0 0 4px 4px;
+  border-radius: 0 0 6px 6px;
+  box-shadow:
+    0 4px 8px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset -1px 0 0 rgba(0, 0, 0, 0.08);
+}
+.piano-key.white-key:hover {
+  background: linear-gradient(180deg, #e0e8ff 0%, #eef0ff 40%, #f8f8ff 100%);
+  box-shadow:
+    0 4px 14px rgba(143, 148, 251, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 .piano-key.white-key.active {
-  background: #4e54c8;
+  background: linear-gradient(180deg, #7a80e8 0%, #9da2f9 40%, #b5b9fd 100%);
   color: white;
+  transform: translateY(2px);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.4),
+    0 0 20px rgba(143, 148, 251, 0.45),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.2);
 }
 .piano-key.black-key {
   width: 24px;
   height: 100px;
-  background: #222;
+  background: linear-gradient(180deg, #1a1a1a 0%, #2a2a2a 40%, #111 100%);
   margin-left: -12px;
   margin-right: -12px;
   z-index: 10;
-  border-radius: 0 0 4px 4px;
-  border: 1px solid #111;
+  border-radius: 0 0 5px 5px;
+  border: 1px solid #050505;
+  border-top: none;
+  box-shadow:
+    2px 4px 8px rgba(0, 0, 0, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 1px 0 0 rgba(255, 255, 255, 0.04);
+}
+.piano-key.black-key:hover {
+  background: linear-gradient(180deg, #252535 0%, #30304a 60%, #1a1a28 100%);
 }
 .piano-key.black-key.active {
-  background: #4e54c8;
-  box-shadow: 0 0 10px #4e54c8;
+  background: linear-gradient(180deg, #4e54c8 0%, #6b70e0 60%, #3d44b0 100%);
+  box-shadow:
+    1px 3px 5px rgba(0, 0, 0, 0.6),
+    0 0 16px rgba(143, 148, 251, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  transform: translateY(1px);
 }
 .key-label {
-  font-weight: 800;
-  font-size: 11px;
+  font-weight: 700;
+  font-size: 10px;
   margin-bottom: 2px;
+  letter-spacing: -0.3px;
 }
 .white-key .key-label {
-  color: #555;
+  color: rgba(60, 60, 80, 0.7);
+}
+.black-key .key-label {
+  color: rgba(200, 200, 220, 0.5);
+  font-size: 9px;
 }
 .key-binding {
-  font-size: 9px;
+  font-size: 8.5px;
   padding: 1px 3px;
   border-radius: 3px;
-  background: rgba(0, 0, 0, 0.2);
-  font-weight: 600;
+  background: rgba(0, 0, 0, 0.18);
+  font-weight: 700;
   white-space: nowrap;
-  color: #fff;
+  color: rgba(255, 255, 255, 0.7);
+}
+.white-key .key-binding {
+  color: rgba(80, 80, 120, 0.75);
+  background: rgba(0, 0, 0, 0.07);
 }
 
-/* 主舞台 底部紀錄區 */
+/* ── 主舞台 底部紀錄區 ─────────────────── */
 .stage-footer {
-  padding: 20px;
+  padding: 8px 0 0;
   display: flex;
   gap: 20px;
   align-items: stretch;
-  background: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.15);
 }
 .glass-container {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 12px;
-  padding: 15px;
+  padding: 12px;
+  backdrop-filter: blur(8px);
 }
 .export-container {
   display: flex;
@@ -1755,20 +1995,23 @@ onUnmounted(() => {
   font-size: 16px;
 }
 
-/* 動畫開關 Switch (原版樣式保留) */
+/* ── 動畫開關 Switch ─────────────────── */
 .modern-switch {
-  width: 40px;
+  width: 38px;
   height: 20px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
   border-radius: 20px;
   position: relative;
   cursor: pointer;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  transition: 0.3s;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  transition:
+    background 0.25s,
+    box-shadow 0.25s;
 }
 .modern-switch.active {
-  background: #5fe3a1;
-  box-shadow: 0 0 10px rgba(95, 227, 161, 0.4);
+  background: linear-gradient(135deg, #5a5fd4, #8f94fb);
+  border-color: rgba(143, 148, 251, 0.5);
+  box-shadow: 0 0 12px rgba(143, 148, 251, 0.4);
 }
 .switch-handle {
   width: 14px;
@@ -1778,10 +2021,11 @@ onUnmounted(() => {
   position: absolute;
   top: 2px;
   left: 2px;
-  transition: 0.3s;
+  transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 .modern-switch.active .switch-handle {
-  left: 22px;
+  left: 20px;
 }
 .modern-switch.small {
   width: 32px;
@@ -1797,90 +2041,99 @@ onUnmounted(() => {
   left: 18px;
 }
 
-/* Modal 樣式 (嚴格保留原樣) */
+/* ── Modal 樣式 ─────────────────── */
 .modal-overlay {
   position: fixed;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(8px);
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(12px) saturate(150%);
   z-index: 2000;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .calibrator-card {
-  width: 400px;
+  width: 420px;
   text-align: center;
   padding: 40px !important;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(143, 148, 251, 0.2) !important;
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(255, 255, 255, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07) !important;
 }
 .modal-header h3 {
   margin-bottom: 8px;
-  font-size: 1.4rem;
+  font-size: 1.35rem;
   color: #fff;
+  letter-spacing: -0.3px;
 }
 .modal-header p {
-  color: #aaa;
-  font-size: 14px;
-  margin-bottom: 30px;
+  color: rgba(180, 180, 210, 0.65);
+  font-size: 13.5px;
+  margin-bottom: 28px;
 }
 .calibration-loader {
   padding: 20px 0;
 }
 .progress-bar-container {
   width: 100%;
-  height: 6px;
-  background: rgba(255, 255, 255, 0.1);
+  height: 4px;
+  background: rgba(255, 255, 255, 0.07);
   border-radius: 10px;
   overflow: hidden;
   margin-bottom: 12px;
 }
 .progress-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #4e54c8, #8f94fb);
+  background: linear-gradient(90deg, #3d44b0, #6b70e0, #a0a5ff);
   transition: width 0.3s ease;
+  border-radius: 10px;
 }
 .progress-text {
   font-size: 12px;
   color: #8f94fb;
   font-weight: 600;
+  letter-spacing: 0.3px;
 }
 .stats-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 15px;
-  margin-bottom: 25px;
+  gap: 12px;
+  margin-bottom: 20px;
 }
 .stat-box {
-  background: rgba(255, 255, 255, 0.05);
-  padding: 15px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 14px;
   border-radius: 10px;
   display: flex;
   flex-direction: column;
 }
 .stat-label {
-  font-size: 11px;
-  color: #aaa;
+  font-size: 10px;
+  color: rgba(120, 120, 160, 0.55);
   text-transform: uppercase;
-  margin-bottom: 5px;
+  letter-spacing: 0.8px;
+  margin-bottom: 6px;
 }
 .stat-value {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 700;
-  color: #fff;
+  color: rgba(240, 240, 255, 0.92);
 }
 .stat-box.warning .stat-value {
   color: #f1c40f;
 }
 .result-summary {
-  background: rgba(95, 227, 161, 0.1);
-  border: 1px solid rgba(95, 227, 161, 0.2);
-  padding: 20px;
+  background: rgba(95, 227, 161, 0.07);
+  border: 1px solid rgba(95, 227, 161, 0.18);
+  padding: 18px;
   border-radius: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 .limit-item {
   display: flex;
@@ -1889,8 +2142,8 @@ onUnmounted(() => {
   margin-bottom: 10px;
 }
 .limit-item .label {
-  font-size: 14px;
-  color: #ccc;
+  font-size: 13px;
+  color: rgba(180, 180, 210, 0.65);
 }
 .limit-item .value {
   font-weight: 700;
@@ -1898,12 +2151,13 @@ onUnmounted(() => {
 .limit-item .value.highlight {
   color: #5fe3a1;
   font-size: 18px;
+  text-shadow: 0 0 12px rgba(95, 227, 161, 0.4);
 }
 .notice-info {
-  font-size: 13px;
-  color: #aaa;
+  font-size: 12.5px;
+  color: rgba(120, 120, 160, 0.55);
   font-style: italic;
-  padding: 0 10px;
+  padding: 0 8px;
 }
 .flex-row {
   display: flex;
@@ -1911,12 +2165,13 @@ onUnmounted(() => {
   gap: 10px;
 }
 .highlight-warning {
-  color: #ffcc00 !important;
+  color: #ffd60a !important;
   font-weight: 600;
   margin-top: 10px;
-  background: rgba(255, 204, 0, 0.1);
-  padding: 8px;
-  border-radius: 6px;
+  background: rgba(255, 214, 10, 0.08);
+  border: 1px solid rgba(255, 214, 10, 0.2);
+  padding: 8px 12px;
+  border-radius: 8px;
 }
 .btn-full {
   width: 100%;
@@ -1932,10 +2187,12 @@ onUnmounted(() => {
 .fade-leave-to {
   opacity: 0;
 }
+
+/* ── Staff 五線譜面板 ─────────────────── */
 .rt-staff-panel {
   display: flex;
   align-items: center;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.02);
 }
 .rt-vexflow-container {
   width: 100%;
@@ -1947,70 +2204,81 @@ onUnmounted(() => {
   overflow: visible;
 }
 .rt-vexflow-container svg {
-  /* 讓 VexFlow 繪製出來的音符與背景融合更好 */
-  filter: drop-shadow(0px 2px 4px rgba(0, 0, 0, 0.5));
+  filter: drop-shadow(0px 2px 6px rgba(0, 0, 0, 0.6));
 }
-/* --- 新增：緊湊版底部佈局 --- */
+
+/* ── 緊湊版底部佈局 ─────────────────── */
 .stage-footer.compact-footer {
-  padding: 5px 0px 0;
+  padding: 5px 0 0;
   display: flex;
-  justify-content: center; /* 🌟 內容面板水平置中 */
+  justify-content: center;
   align-items: flex-start;
   gap: 0;
   height: auto;
-  overflow-x: auto; /* 🌟 核心：寬度不足 1130px 時允許橫向捲動 */
+  overflow-x: auto;
   width: 100%;
 }
-
 .rt-staff-panel {
   display: flex;
   flex-direction: column;
   padding: 0 15px !important;
   position: relative;
   overflow: visible !important;
-  margin: 0 auto; /* 🌟 雙重保險：置中對齊 */
-  width: max-content; /* 🌟 根據內容寬度自動收縮，以便置中 */
+  margin: 0 auto;
+  width: max-content;
 }
 
-/* 迷你狀態列 */
+/* ── 迷你狀態列 ─────────────────── */
 .mini-status-bar {
   display: flex;
   align-items: center;
-  gap: 15px;
-  padding: 6px 12px;
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 8px;
+  gap: 14px;
+  padding: 5px 12px;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 20px;
   width: max-content;
-  font-size: 12px;
-  color: #aaa;
-  margin-bottom: 5px; /* 稍微推開一點五線譜 */
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 11.5px;
+  color: rgba(180, 180, 210, 0.65);
+  margin-bottom: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
 }
 .mini-status-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   font-family: 'Outfit', sans-serif;
 }
 .mini-status-item strong {
-  color: #fff;
-  font-size: 15px;
+  color: rgba(240, 240, 255, 0.92);
+  font-size: 14px;
 }
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: #f1c40f;
-  box-shadow: 0 0 8px rgba(241, 196, 15, 0.5);
+  box-shadow: 0 0 8px rgba(241, 196, 15, 0.6);
 }
 .mini-status-item.is-active .status-dot {
   background: #5fe3a1;
-  box-shadow: 0 0 10px rgba(95, 227, 161, 0.8);
+  box-shadow: 0 0 10px rgba(95, 227, 161, 0.9);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%,
+  100% {
+    box-shadow: 0 0 6px rgba(95, 227, 161, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 14px rgba(95, 227, 161, 1);
+  }
 }
 .mini-status-divider {
   width: 1px;
-  height: 14px;
-  background: rgba(255, 255, 255, 0.2);
+  height: 12px;
+  background: rgba(255, 255, 255, 0.12);
 }
 .beat-pulse-text {
   color: #8f94fb !important;
@@ -2019,27 +2287,32 @@ onUnmounted(() => {
   transition: 0.1s ease;
 }
 
-/* 迷你下載按鈕樣式 */
+/* ── 迷你下載按鈕 ─────────────────── */
 .mini-export-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  background: rgba(78, 84, 200, 0.2);
-  border: 1px solid rgba(78, 84, 200, 0.4);
+  gap: 5px;
+  background: rgba(78, 84, 200, 0.15);
+  border: 1px solid rgba(143, 148, 251, 0.3);
   color: #8f94fb;
   padding: 3px 10px;
-  border-radius: 4px;
-  font-size: 11px;
+  border-radius: 20px;
+  font-size: 10.5px;
   font-weight: 700;
   cursor: pointer;
-  transition: 0.2s;
+  transition:
+    background 0.2s,
+    color 0.2s,
+    box-shadow 0.2s;
+  letter-spacing: 0.5px;
 }
 .mini-export-btn:hover:not(:disabled) {
-  background: rgba(78, 84, 200, 0.4);
+  background: rgba(143, 148, 251, 0.25);
   color: #fff;
+  box-shadow: 0 0 12px rgba(143, 148, 251, 0.3);
 }
 .mini-export-btn:disabled {
-  opacity: 0.3;
+  opacity: 0.25;
   cursor: not-allowed;
   filter: grayscale(1);
 }

@@ -1,59 +1,95 @@
 <template>
   <section class="workspace-panel glass-panel">
-    <div class="action-toolbar glass-card">
-      <div class="toolbar-left">
-        <button
-          @click="togglePreview"
-          class="modern-btn btn-icon"
-          :class="isPlayingPreview ? 'btn-danger' : 'btn-info'"
-          :title="
-            isPlayingPreview ? 'Stop Playback' : resultMidiUrl ? 'Preview Full' : 'Preview Melody'
-          "
-        >
-          <svg
-            v-if="!isPlayingPreview"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            width="22"
-            height="22"
+    <div class="action-toolbar">
+      <div class="toolbar-row toolbar-main-row">
+        <div class="toolbar-left">
+          <button
+            @click="togglePreview"
+            class="modern-btn btn-icon"
+            :class="isPlayingPreview ? 'btn-danger' : 'btn-info'"
+            :title="
+              isPlayingPreview ? 'Stop Playback' : resultMidiUrl ? 'Preview Full' : 'Preview Melody'
+            "
           >
-            <path d="M8 5v14l11-7z" />
-          </svg>
-          <svg v-else viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
-            <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
-          </svg>
-        </button>
-        <div class="toolbar-divider"></div>
-        <button @click="clearCanvas" class="modern-btn btn-outline-danger">Clear</button>
-        <div class="toolbar-divider"></div>
-        <select :value="editorMode" @change="handleEditorModeChange" class="modern-select minimal">
-          <option value="pad">Grid Pad</option>
-          <option value="staff">Staff (VexFlow)</option>
-        </select>
+            <svg
+              v-if="!isPlayingPreview"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              width="22"
+              height="22"
+            >
+              <path d="M8 5v14l11-7z" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
+              <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+            </svg>
+          </button>
+          <div class="toolbar-divider"></div>
+          <button @click="clearCanvas" class="modern-btn btn-outline-danger">Clear</button>
+          <div class="toolbar-divider"></div>
+          <select
+            :value="editorMode"
+            @change="handleEditorModeChange"
+            class="modern-select minimal"
+          >
+            <option value="pad">Grid Pad</option>
+            <option value="staff">Staff (VexFlow)</option>
+          </select>
+        </div>
+        <div class="toolbar-right">
+          <button
+            @click="generateRandomMelody"
+            class="modern-btn btn-outline"
+            :disabled="isGenerating"
+          >
+            Generate Random
+          </button>
+          <button
+            @click="submitMelodyJson"
+            class="modern-btn btn-primary generate-btn"
+            :disabled="isGenerating || melodyData.length === 0"
+          >
+            Generate Accompaniment
+          </button>
+          <a
+            v-if="resultMidiUrl"
+            :href="resultMidiUrl"
+            download="accompaniment.mid"
+            class="modern-btn btn-success download-btn"
+          >
+            ↓ Download MIDI
+          </a>
+        </div>
       </div>
-      <div class="toolbar-right">
-        <button
-          @click="generateRandomMelody"
-          class="modern-btn btn-outline"
-          :disabled="isGenerating"
-        >
-          Generate Random
-        </button>
-        <button
-          @click="submitMelodyJson"
-          class="modern-btn btn-primary generate-btn"
-          :disabled="isGenerating || melodyData.length === 0"
-        >
-          Generate Accompaniment
-        </button>
-        <a
-          v-if="resultMidiUrl"
-          :href="resultMidiUrl"
-          download="accompaniment.mid"
-          class="modern-btn btn-success download-btn"
-        >
-          Download MIDI
-        </a>
+
+      <!-- Duration / Accidental: 只在 staff 模式顯示，作為工具列第二行 -->
+      <div v-show="editorMode === 'staff'" class="toolbar-row toolbar-note-row">
+        <div class="tool-group">
+          <span class="tool-label">Duration:</span>
+          <button :class="{ active: vfToolDuration === 1 }" @click="vfToolDuration = 1">8th</button>
+          <button :class="{ active: vfToolDuration === 2 }" @click="vfToolDuration = 2">
+            Quarter
+          </button>
+          <button :class="{ active: vfToolDuration === 4 }" @click="vfToolDuration = 4">
+            Half
+          </button>
+          <button :class="{ active: vfToolDuration === 8 }" @click="vfToolDuration = 8">
+            Whole
+          </button>
+        </div>
+        <div class="toolbar-divider-h"></div>
+        <div class="tool-group">
+          <span class="tool-label">Accidental:</span>
+          <button :class="{ active: vfToolAccidental === '' }" @click="vfToolAccidental = ''">
+            Natural
+          </button>
+          <button :class="{ active: vfToolAccidental === '#' }" @click="vfToolAccidental = '#'">
+            Sharp
+          </button>
+          <button :class="{ active: vfToolAccidental === 'b' }" @click="vfToolAccidental = 'b'">
+            Flat
+          </button>
+        </div>
       </div>
     </div>
 
@@ -95,36 +131,6 @@
       </div>
 
       <div v-show="editorMode === 'staff'" class="vexflow-container">
-        <div class="vf-toolbar modern-vf-toolbar">
-          <div class="tool-group">
-            <span class="tool-label">Duration:</span>
-            <button :class="{ active: vfToolDuration === 1 }" @click="vfToolDuration = 1">
-              8th
-            </button>
-            <button :class="{ active: vfToolDuration === 2 }" @click="vfToolDuration = 2">
-              Quarter
-            </button>
-            <button :class="{ active: vfToolDuration === 4 }" @click="vfToolDuration = 4">
-              Half
-            </button>
-            <button :class="{ active: vfToolDuration === 8 }" @click="vfToolDuration = 8">
-              Whole
-            </button>
-          </div>
-          <div class="tool-group">
-            <span class="tool-label">Accidental:</span>
-            <button :class="{ active: vfToolAccidental === '' }" @click="vfToolAccidental = ''">
-              Natural
-            </button>
-            <button :class="{ active: vfToolAccidental === '#' }" @click="vfToolAccidental = '#'">
-              Sharp
-            </button>
-            <button :class="{ active: vfToolAccidental === 'b' }" @click="vfToolAccidental = 'b'">
-              Flat
-            </button>
-          </div>
-        </div>
-
         <div class="staff-layout glass-container centered-staff">
           <div class="fixed-clef" ref="clefContainer"></div>
           <div
@@ -893,8 +899,9 @@ onMounted(() => {
     0 8px 40px rgba(78, 84, 200, 0.07),
     0 2px 8px rgba(0, 0, 0, 0.04);
   border-radius: 24px;
-  padding: 30px 32px;
+  padding: 0;
   margin-bottom: 25px;
+  overflow: hidden;
 }
 
 .glass-container {
@@ -925,8 +932,8 @@ onMounted(() => {
 
 /* ---------- Icon-only play/stop button ---------- */
 .btn-icon {
-  width: 48px;
-  height: 48px;
+  width: 40px;
+  height: 40px;
   padding: 0;
   display: flex;
   align-items: center;
@@ -960,8 +967,8 @@ onMounted(() => {
   box-shadow: 0 8px 22px rgba(255, 71, 87, 0.5) !important;
 }
 .btn-icon svg {
-  width: 24px !important;
-  height: 24px !important;
+  width: 18px !important;
+  height: 18px !important;
   display: block;
   flex-shrink: 0;
 }
@@ -1005,32 +1012,67 @@ onMounted(() => {
 /* ---------- Action Toolbar ---------- */
 .action-toolbar {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 24px;
-  margin-bottom: 22px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  /* Subtle left accent replacing the heavy 4px border */
-  box-shadow:
-    inset 3px 0 0 #4e54c8,
-    0 2px 10px rgba(0, 0, 0, 0.03);
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  margin-bottom: 0;
+  border-radius: 0;
+  background: #ffffff;
+  border: none;
+  border-bottom: 2px solid rgba(78, 84, 200, 0.08);
+  overflow: hidden;
 }
 
-.toolbar-left,
+/* 工具列每一行 */
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  padding: 11px 28px;
+}
+
+.toolbar-main-row {
+  background: #ffffff;
+}
+
+/* Duration row — 明確的第二行，用實心底色區分 */
+.toolbar-note-row {
+  gap: 16px;
+  padding: 8px 28px;
+  background: #f0f1fa;
+  border-top: 1px solid rgba(78, 84, 200, 0.1);
+}
+
+/* 水平分隔線（note-row 內兩組之間） */
+.toolbar-divider-h {
+  width: 1px;
+  height: 18px;
+  background: rgba(78, 84, 200, 0.15);
+  flex-shrink: 0;
+  margin: 0 4px;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 16px;
+  border-right: 1px solid rgba(78, 84, 200, 0.1);
+}
+
 .toolbar-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  padding-left: 16px;
+  margin-left: auto;
 }
 
 /* ---------- Buttons ---------- */
 .modern-btn {
   font-family: 'Outfit', sans-serif;
-  padding: 11px 22px;
-  border-radius: 10px;
-  font-size: 15px;
+  padding: 9px 18px;
+  border-radius: 9px;
+  font-size: 14px;
   font-weight: 700;
   cursor: pointer;
   border: none;
@@ -1107,19 +1149,20 @@ onMounted(() => {
   border-color: rgba(78, 84, 200, 0.45);
 }
 
-/* Success — download */
+/* Download — match brand primary */
 .btn-success {
-  background: linear-gradient(135deg, #5fe3a1 0%, #27ae60 100%);
+  background: linear-gradient(135deg, #4e54c8 0%, #8f94fb 100%);
   color: #fff !important;
-  box-shadow: 0 4px 12px rgba(39, 174, 96, 0.22);
+  box-shadow: 0 4px 14px rgba(78, 84, 200, 0.28);
+  text-decoration: none;
 }
 .btn-success:not(:disabled):hover {
   transform: translateY(-1px);
-  box-shadow: 0 8px 20px rgba(39, 174, 96, 0.3);
+  box-shadow: 0 8px 22px rgba(78, 84, 200, 0.38);
 }
 
 .generate-btn {
-  padding: 11px 28px;
+  padding: 9px 22px;
 }
 
 .download-btn {
@@ -1131,7 +1174,7 @@ onMounted(() => {
 /* ---------- Editor area ---------- */
 .modern-editor-area {
   margin-top: 0;
-  padding: 22px;
+  padding: 24px 28px 28px;
   background: linear-gradient(160deg, rgba(255, 255, 255, 0.92) 0%, rgba(247, 249, 252, 0.85) 100%);
   border: 1px solid rgba(255, 255, 255, 0.85);
   border-radius: 18px;
@@ -1140,41 +1183,31 @@ onMounted(() => {
     0 1px 4px rgba(0, 0, 0, 0.03);
 }
 
-/* ---------- VexFlow toolbar ---------- */
-.modern-vf-toolbar {
-  display: flex;
-  gap: 28px;
-  align-items: center;
-  margin-bottom: 18px;
-  padding: 14px 20px;
-  background: rgba(248, 249, 252, 0.8);
-  border-radius: 12px;
-  border: 1px solid rgba(78, 84, 200, 0.06);
-}
-
+/* ---------- Note tools (inside toolbar second row) ---------- */
 .tool-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .tool-label {
   font-family: 'Outfit', sans-serif;
   font-weight: 700;
-  font-size: 12px;
+  font-size: 11px;
   color: #aab4c4;
   text-transform: uppercase;
   letter-spacing: 1px;
+  white-space: nowrap;
 }
 
 .tool-group button {
   font-family: 'Outfit', sans-serif;
-  padding: 9px 18px;
+  padding: 6px 14px;
   background: rgba(255, 255, 255, 0.9);
   border: 1.5px solid rgba(78, 84, 200, 0.12);
-  border-radius: 8px;
+  border-radius: 20px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: #7f8c8d;
   transition:

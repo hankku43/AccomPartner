@@ -128,13 +128,13 @@
                 v-if="!isPlayingAdvanced"
                 viewBox="0 0 24 24"
                 fill="currentColor"
-                width="22"
-                height="22"
+                width="16"
+                height="16"
               >
                 <path d="M8 5v14l11-7z" />
               </svg>
               <!-- Stop icon -->
-              <svg v-else viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
+              <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
                 <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
               </svg>
             </button>
@@ -142,9 +142,9 @@
               v-if="advancedResultMidiUrl"
               :href="advancedResultMidiUrl"
               download="advanced_accompaniment.mid"
-              class="modern-btn btn-outline"
+              class="modern-btn btn-outline btn-compact"
             >
-              Download MIDI
+              ↓ MIDI
             </a>
           </div>
         </div>
@@ -1113,6 +1113,12 @@ onUnmounted(() => {
   background: rgba(78, 84, 200, 0.05);
   border-color: rgba(78, 84, 200, 0.45);
 }
+.btn-compact {
+  padding: 6px 12px !important;
+  font-size: 12px !important;
+  border-radius: 20px !important;
+  letter-spacing: 0.3px;
+}
 .btn-outline:disabled {
   opacity: 0.35;
   cursor: not-allowed;
@@ -1129,8 +1135,8 @@ onUnmounted(() => {
 
 /* ── Play button ── */
 .play-btn {
-  width: 48px;
-  height: 48px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   border: none;
   cursor: pointer;
@@ -1176,8 +1182,8 @@ onUnmounted(() => {
 }
 .canvas-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 14px;
   margin-bottom: 16px;
   padding-bottom: 14px;
   border-bottom: 1px solid rgba(78, 84, 200, 0.08);
@@ -1187,11 +1193,12 @@ onUnmounted(() => {
   font-size: 1.1rem;
   font-weight: 700;
   color: #2c3e50;
+  margin: 0;
 }
 .canvas-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 .advanced-vexflow-container {
   overflow-x: auto;

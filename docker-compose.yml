@@ -9,9 +9,11 @@ services:
     container_name: accompartner_backend
     restart: always
     environment:
-      # 將掛載進來的路徑告訴程式
+      # ⚠️  安全性設定：請將下方的網址替換為您的實際前端網址（例如 http://your-server-ip 或 https://yourdomain.com）
+      # 使用 * 代表允許任意來源跨域呼叫 API，在生產環境中具有安全風險。
       - MODEL_DIR=/app/app/resources
-      - ALLOWED_ORIGINS=*
+      - ALLOWED_ORIGINS=http://localhost
+
     # 在 2GB RAM 機器上，我們不限制記憶體，全交由 Swap 處理 (否則 Docker 會主動 Kill 掉)
     volumes:
       # 為了不讓映像檔過於肥大，強烈建議將您本地的 .pth 模型檔直接放進以下對應目錄中
