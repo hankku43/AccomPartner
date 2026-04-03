@@ -21,7 +21,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useAppState } from '../../composables/useAppState'
 
 const { showHero } = useAppState()
@@ -29,6 +29,8 @@ defineEmits(['start', 'switchMode'])
 
 const musicParticlesCanvas = ref(null)
 let animationFrameId = null
+// 提升至模組作用域，確保 add/remove 操作的是同一個函式參考
+let resizeCanvas = null
 
 const initMusicParticles = () => {
   if (!showHero.value) return
@@ -36,7 +38,10 @@ const initMusicParticles = () => {
   if (!canvas) return
   const ctx = canvas.getContext('2d')
 
-  const resizeCanvas = () => {
+  // 移除舊的監聽器（防止每次 Hero 重新顯示時疊加）
+  if (resizeCanvas) window.removeEventListener('resize', resizeCanvas)
+
+  resizeCanvas = () => {
     canvas.width = window.innerWidth
     canvas.height = window.innerHeight
   }
@@ -112,8 +117,10 @@ const initMusicParticles = () => {
         let p2 = particles[j]
         let dx = p.x - p2.x
         let dy = p.y - p2.y
-        let distance = Math.sqrt(dx * dx + dy * dy)
-        if (distance < 100) {
+        // 用平方距離比較，省去不必要的 Math.sqrt（僅繪製時才計算真實距離）
+        let dist2 = dx * dx + dy * dy
+        if (dist2 < 10000) { // 100² = 10000
+          let distance = Math.sqrt(dist2)
           ctx.beginPath()
           ctx.strokeStyle = `rgba(100, 140, 255, ${0.12 - distance / 833 + Math.sin(pulsePhase) * 0.02})`
           ctx.lineWidth = 1
@@ -138,11 +145,18 @@ watch(showHero, (newVal) => {
     })
   } else {
     if (animationFrameId) cancelAnimationFrame(animationFrameId)
+    // Hero 隱藏時移除 resize 監聽器
+    if (resizeCanvas) window.removeEventListener('resize', resizeCanvas)
   }
 })
 
 onMounted(() => {
   initMusicParticles()
+})
+
+onUnmounted(() => {
+  if (animationFrameId) cancelAnimationFrame(animationFrameId)
+  if (resizeCanvas) window.removeEventListener('resize', resizeCanvas)
 })
 </script>
 

@@ -63,7 +63,6 @@ class AudioService {
             
             this.kickSynth = { 
                 triggerAttack: (t) => {
-                    console.log("🥁 Kick [Attack] Triggered at:", t);
                     this.kickSamp.triggerAttack('A1', t);
                 },
                 triggerAttackRelease: (a1, a2, a3) => {
@@ -74,12 +73,10 @@ class AudioService {
             };
             this.snareSynth = { 
                 triggerAttack: (t) => {
-                    console.log("🥁 Snare [Attack] Triggered at:", t);
                     this.snareSamp.triggerAttack('B1', t);
                 },
                 triggerAttackRelease: (a1, a2, a3) => {
                     const time = (a3 !== undefined) ? a3 : a2;
-                    console.log("🥁 Snare [Release] Triggered at (time):", time);
                     this.snareSamp.triggerAttack('B1', time);
                 },
                 volume: this.snareSamp.volume
@@ -97,9 +94,7 @@ class AudioService {
 
             await Tone.loaded();
             this.isReady = true;
-            console.log("✅ 全域音訊引擎與高品質取樣器載入完成！");
-            console.log("🎹 鋼琴取樣器狀態:", this.melodySynth.loaded ? "已就緒" : "等待中");
-            console.log("🥁 鼓組分軌取樣狀態: 已完成平衡校準");
+            console.log("✅ 音訊引擎與取樣器載入完成");
         } catch (error) {
             console.error("❌ 音訊引擎載入失敗:", error);
         } finally {

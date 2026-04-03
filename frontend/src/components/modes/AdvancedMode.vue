@@ -318,8 +318,12 @@ const submitMidiFile = async () => {
     let jsonData = null
     try {
       jsonData = JSON.parse(jsonStr)
-      console.log('jsonData:', jsonData)
-    } catch (e) {}
+      if (import.meta.env.DEV) console.log('[API] Response parsed:', jsonData)
+    } catch (e) {
+      // JSON 解析失敗通常代表後端回傳了非預期格式（如 HTML 錯誤頁）
+      console.error('[API Error] 回應不是合法的 JSON，這可能代表後端發生了錯誤:', jsonStr.slice(0, 200))
+      throw new Error('後端回應格式錯誤，請檢查後端日誌')
+    }
 
     let blob
     let chordLabels = []
@@ -836,10 +840,13 @@ const playAdvancedScope = async () => {
   }
 
   isPlayingAdvanced.value = true
-  Tone.Transport.schedule(() => {
+  Tone.Transport.schedule((time) => {
+    // Web Audio 回呼在獨立執行緒執行，透過 nextTick 確保 Vue 響應式更新在主執行緒進行
+    nextTick(() => {
+      isPlayingAdvanced.value = false
+    })
     Tone.Transport.stop()
     Tone.Transport.cancel()
-    isPlayingAdvanced.value = false
   }, maxSteps * stepTime)
   Tone.Transport.start()
 }

@@ -1185,7 +1185,9 @@ const runCalibration = async () => {
     avg,
     std,
     autoDisabledAnim: realtimeBPM.value > safeBPM,
-    lowSafeBPM: safeBPM < 240,
+    // safeBPMWithAnim 最大被夾在 100，原閾值 240 對所有設備永遠為 true
+    // 改為 80（= absoluteMaxBPM 上限的 80%）才有實際壞效能警告意義
+    lowSafeBPM: safeBPM < 80,
   }
 
   if (realtimeBPM.value > absoluteMaxBPM.value) {

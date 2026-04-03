@@ -49,11 +49,13 @@ def cleanup_old_temp_files():
 async def start_cleanup_task():
     """
     背景循環任務：定時執行清理邏輯。
+    使用 asyncio.to_thread 避免同步 I/O 阻塞 event loop。
     """
     logger.info("🚀 背景清理任務已啟動。")
     # 啟動時先執行一次，清理上次關機留下的檔案
-    cleanup_old_temp_files()
-    
+    await asyncio.to_thread(cleanup_old_temp_files)
+
     while True:
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
-        cleanup_old_temp_files()
+        await asyncio.to_thread(cleanup_old_temp_files)
+

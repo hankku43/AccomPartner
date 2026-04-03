@@ -177,9 +177,7 @@ const aiAccompanimentData = ref([])
 const resultMidiUrl = ref(null)
 const ghostNote = ref(null)
 
-// Tone.js Singletons for this component to prevent memory leaks
-let synth = null
-let delSynth = null
+// Audio 已完全由 audioService 單例管理，此處不再持有本地 synth 實例
 
 const initSynth = async () => {
   await audioService.init()
@@ -241,8 +239,9 @@ const submitMelodyJson = async () => {
 
   try {
     isGenerating.value = true
-    // 🌟 新增：偵錯發送給模型的資料量
-    console.log(`[API Debug] 發送給模型的旋律音符數: ${melodyData.value.length}`)
+    if (import.meta.env.DEV) {
+      console.log(`[API Debug] 發送給模型的旋律音符數: ${melodyData.value.length}`)
+    }
 
     const response = await fetch('/api/generate-from-json', {
       method: 'POST',
@@ -265,9 +264,11 @@ const submitMelodyJson = async () => {
       const midi = new Midi(arrayBuffer)
       const newAiData = []
       midi.tracks.forEach((track, idx) => {
-        console.log(
-          `[MIDI Debug] Track ${idx} | Program: ${track.instrument.number} | 音符數: ${track.notes.length}`,
-        )
+        if (import.meta.env.DEV) {
+          console.log(
+            `[MIDI Debug] Track ${idx} | Program: ${track.instrument.number} | 音符數: ${track.notes.length}`,
+          )
+        }
 
         // Program 0 (Piano) 為伴奏
         if (track.instrument.number !== 0) return

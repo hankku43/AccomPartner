@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Literal
 
 
 class NoteEvent(BaseModel):
@@ -15,10 +15,13 @@ class GenerateFromJsonRequest(BaseModel):
     """前端 /api/generate-from-json 的請求格式"""
 
     melody: List[NoteEvent] = Field(..., min_length=1, description="旋律音符列表")
-    mode: str = Field(default="onestage", description="推理模式")
+    mode: Literal["oneStage", "twoStage-std", "twoStage-bar", "twoStage-nar"] = Field(
+        default="oneStage", description="推理模式"
+    )
     bpm: int = Field(default=120, ge=40, le=300, description="每分鐘拍數")
     complexity: float = Field(default=0.5, ge=0.0, le=1.0, description="伴奏複雜度")
     creativity: float = Field(default=1.0, ge=0.1, le=2.0, description="創意程度")
+
 
 
 class HealthResponse(BaseModel):
