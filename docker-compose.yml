@@ -20,7 +20,7 @@ services:
       # 等號左邊是宿主機路徑(需包含模型)，等號右邊是容器內系統路徑
       - ./backend/app/resources:/app/app/resources
 
-  # 前端: Vue 靜態檔 + Nginx 反向代理 (公開連接埠 80)
+  # 前端: Vue 靜態檔 + Nginx 反向代理 (公開連接埠 80 與 443)
   frontend:
     build:
       context: ./frontend
@@ -28,7 +28,20 @@ services:
     container_name: accompartner_frontend
     restart: always
     ports:
-      - "80:80" # 對外開放機器的 Port 80
-      - "443:443" # 對外開放機器的 Port 443
+      - "80:80"   # HTTP
+      - "443:443" # HTTPS
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
     depends_on:
       - backend # 確保後端先啟動
+
+  # Certbot: 處理 Let's Encrypt SSL 憑證簽發與自動更新
+  certbot:
+    image: certbot/certbot
+    container_name: certbot
+    restart: unless-stopped
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
