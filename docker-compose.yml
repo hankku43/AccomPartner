@@ -12,7 +12,7 @@ services:
       # ⚠️  安全性設定：請將下方的網址替換為您的實際前端網址（例如 http://your-server-ip 或 https://yourdomain.com）
       # 使用 * 代表允許任意來源跨域呼叫 API，在生產環境中具有安全風險。
       - MODEL_DIR=/app/app/resources
-      - ALLOWED_ORIGINS=http://localhost
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost}
 
     # 在 2GB RAM 機器上，我們不限制記憶體，全交由 Swap 處理 (否則 Docker 會主動 Kill 掉)
     volumes:
@@ -29,5 +29,6 @@ services:
     restart: always
     ports:
       - "80:80" # 對外開放機器的 Port 80
+      - "443:443" # 對外開放機器的 Port 443
     depends_on:
       - backend # 確保後端先啟動
