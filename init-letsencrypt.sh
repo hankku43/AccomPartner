@@ -29,7 +29,7 @@ docker compose run --rm --entrypoint "\
     -subj '/CN=localhost'" certbot
 
 echo "### 啟動 Nginx..."
-docker compose up --force-recreate -d frontend
+docker compose up --build --force-recreate -d frontend
 
 echo "### 刪除剛剛生成的臨時憑證..."
 docker compose run --rm --entrypoint "\
