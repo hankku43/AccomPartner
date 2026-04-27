@@ -1,15 +1,8 @@
 <template>
   <nav class="premium-navbar">
     <div class="nav-brand" @click="showHero = true">
-      <svg class="nav-logo" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 2L2 22h20L12 2z" fill="url(#grad1)" />
-        <defs>
-          <linearGradient id="grad1" x1="2" y1="22" x2="22" y2="2" gradientUnits="userSpaceOnUse">
-            <stop stop-color="#4e54c8" />
-            <stop offset="1" stop-color="#8f94fb" />
-          </linearGradient>
-        </defs>
-      </svg>
+      <img src="/logo.png" alt="Logo" class="nav-logo" />
+
       <span class="nav-title">AccomPartner</span>
     </div>
     <div class="nav-menu">
