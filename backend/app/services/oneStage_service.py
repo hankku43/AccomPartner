@@ -13,7 +13,7 @@ oneStage_service.py
   - music21 Krumhansl-Schmuckler 調性分析 + 轉調至 C 大 / A 小
 
 資源路徑：
-  app/resources/pop909_norm_false_modify_preprocess/
+  app/resources/oneStage/
     ├── norm_first_false_epoch_100.pth
     └── tokenizer.json
 """
@@ -26,8 +26,10 @@ import io
 import os
 import sys
 import tempfile
+import math
 
 import torch
+
 import symusic
 import logging
 from miditok import REMI, TokSequence
@@ -46,8 +48,9 @@ from oneStage_transformer import POP909Transformer  # noqa: E402
 _RESOURCE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "resources",
-    "pop909_norm_false_modify_preprocess",
+    "oneStage",
 )
+
 _CHECKPOINT_PATH = os.path.join(_RESOURCE_DIR, "norm_first_false_epoch_100.pth")
 _TOKENIZER_PATH = os.path.join(_RESOURCE_DIR, "tokenizer.json")
 
@@ -176,18 +179,40 @@ def _top_k_top_p_filtering(
     return logits
 
 
-def _detect_key_offset(midi_path: str) -> tuple[int, int]:
-    """用 music21 分析調性，回傳 (to_c_offset, back_offset)。"""
+def _detect_key_offset(midi_path: str) -> tuple[int, int, str]:
+    """
+    偵測調性並回傳 (to_c_offset, back_offset, key_str)。
+    優先順序：
+      1. 讀取 MIDI 檔案內建的 key_signature Meta Event
+      2. 無標記時，使用 music21 分析音符組成
+    """
+    from app.services import midi_service as _ms
+    key_str = _ms.read_key_str_from_midi(midi_path)
+    embedded = _ms.read_key_signature_from_midi(midi_path)
+    if embedded is not None:
+        to_c_offset, back_offset, _ = embedded
+        return to_c_offset, back_offset, (key_str if key_str else "C")
+
+    # Fallback: music21 演算法偵測
+    logger.info("MIDI 無內建調號，改用 music21 分析...")
     m21score = m21converter.parse(midi_path)
     detected = m21score.analyze("key")
     tonic_name = detected.tonic.name
     mode = detected.mode
-    logger.info("調性分析結果：%s %s", tonic_name, mode)
+    logger.info("music21 調性分析結果：%s %s", tonic_name, mode)
+
+    if mode == "minor":
+        key_str = tonic_name + "m"
+    else:
+        key_str = tonic_name
+    key_str = key_str.replace("-", "b")
 
     key_map = KEY_MAP_MINOR if mode == "minor" else KEY_MAP_MAJOR
     offset = key_map.get(tonic_name, 0)
-    logger.info("轉調偏移：至 C=%+d, 還原=%+d", offset, -offset)
-    return offset, -offset
+    logger.info("轉調偏移：至 C=%+d, 還原=%+d, 調號=%s", offset, -offset, key_str)
+    return offset, -offset, key_str
+
+
 
 
 def _load_midi(path: str) -> symusic.Score:
@@ -349,7 +374,8 @@ def _run_inference(
         ticks_per_bar = int(4 * tpq * numerator / denominator)
         all_notes = sorted(orig_score.tracks[0].notes, key=lambda n: n.time)
         last_tick = max(n.time + n.duration for n in all_notes)
-        total_bars = max(1, last_tick // ticks_per_bar)
+        total_bars = int(math.ceil(last_tick / ticks_per_bar)) + 1
+
 
         logger.info(
             "MIDI 解析完成。TPQ=%d, 拍號=%d/%d, 總長度=%d 小節, 音符數=%d",
@@ -361,7 +387,8 @@ def _run_inference(
         )
 
         # ── 3. 調性分析 ───────────────────────────────────────────────────────
-        to_c_offset, back_offset = _detect_key_offset(tmp_path)
+        to_c_offset, back_offset, key_str = _detect_key_offset(tmp_path)
+
 
         # ── 4. 計算滑動視窗起始小節 ────────────────────────────────────────────
         window_starts = list(range(0, total_bars - WINDOW_BARS + 1, STRIDE_BARS))
@@ -498,7 +525,18 @@ def _run_inference(
         try:
             combined.dump_midi(out_path)
             with open(out_path, "rb") as f:
-                return f.read(), []
+                midi_b = f.read()
+            
+            try:
+                from app.services import midi_service
+                midi_b = midi_service.add_chords_to_midi(midi_b, [], key_signature=key_str)
+            except Exception as e:
+                logger.warning(f"無法將調號/和弦寫入 MIDI: {e}")
+
+
+
+            return midi_b, []
+
         finally:
             if os.path.exists(out_path):
                 os.remove(out_path)
@@ -514,8 +552,12 @@ def _run_inference(
 
 
 async def generate(
-    melody_midi_bytes: bytes, complexity: float = 0.5, creativity: float = 1.0
+    melody_midi_bytes: bytes,
+    complexity: float = 0.5,
+    creativity: float = 1.0,
+    original_midi_bytes: bytes | None = None,
 ) -> tuple[bytes, list[str]]:
+
     """
     使用 oneStage (norm_false) 模型為旋律生成伴奏，回傳雙軌 MIDI bytes。
 

@@ -15,14 +15,14 @@ model_router.py
 from typing import Callable, Awaitable
 from fastapi import HTTPException
 
-from app.services import oneStage_service, twoStage_service
+from app.services import oneStage_service, twoStage_service, threeStage_service
 
 # mode 字串 → 推理函數的對應表
 _SERVICE_MAP: dict[str, Callable[[bytes], Awaitable[bytes]]] = {
     "onestage": oneStage_service.generate,
-    "twostagestd": twoStage_service.generate_std,
     "twostagebar": twoStage_service.generate_bar,
     "twostagenar": twoStage_service.generate_nar,
+    "threestage": threeStage_service.generate,
 }
 
 SUPPORTED_MODES = list(_SERVICE_MAP.keys())

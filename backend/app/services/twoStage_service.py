@@ -5,7 +5,6 @@ twoStage_service.py
 
 推理流程：
   Stage 1 (Chord Prediction): 由 AI 預測和弦序列，支援三種模型架構：
-    - std  (Standard AR)  → pop909_chord_predictor
     - bar  (Bar-level AR) → pop909_chord_predictor_bar
     - nar  (NAR)          → pop909_chord_predictor_nar
   Stage 2 (Accompaniment Generation): 根據旋律 + 和弦生成伴奏。
@@ -15,7 +14,6 @@ twoStage_service.py
   model/pop909_two_stage_chord/generate.py
 
 公開函式：
-  generate_std(melody_midi_bytes) → bytes
   generate_bar(melody_midi_bytes) → bytes
   generate_nar(melody_midi_bytes) → bytes
 """
@@ -28,15 +26,19 @@ import json
 import os
 import sys
 import tempfile
+import math
 from typing import Literal
 
 import torch
+
 import symusic
 import logging
 from miditok import REMI, TokSequence
 from music21 import converter as m21converter
+from app.services import midi_service
 
 logger = logging.getLogger(__name__)
+
 
 # ── 讓 service 能 import 同目錄的 twoStage_transformer.py ─────────────────────
 _SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -53,17 +55,9 @@ _RESOURCES = os.path.join(
 )
 
 # Stage 2（共用）
-_STAGE2_DIR = os.path.join(_RESOURCES, "pop909_two_stage_chord")
-_STAGE2_CHECKPOINT = os.path.join(_STAGE2_DIR, "two_stage_chord_epoch_100.pth")
-_STAGE2_TOKENIZER = os.path.join(_STAGE2_DIR, "tokenizer.json")
-_STAGE2_CHORD_VOCAB = os.path.join(_STAGE2_DIR, "chord_vocab.json")
-
-# Stage 1（各模式對應不同目錄）
-_STAGE1_DIRS: dict[str, str] = {
-    "std": os.path.join(_RESOURCES, "pop909_chord_predictor"),
-    "bar": os.path.join(_RESOURCES, "pop909_chord_predictor_bar"),
-    "nar": os.path.join(_RESOURCES, "pop909_chord_predictor_nar"),
-}
+_STAGE2_CHECKPOINT = os.path.join(_RESOURCES, "twoStage", "accom_model.pth")
+_STAGE2_TOKENIZER = os.path.join(_RESOURCES, "twoStage", "accom_tokenizer.json")
+_STAGE2_CHORD_VOCAB = os.path.join(_RESOURCES, "twoStage", "accom_chord_vocab.json")
 
 # ── 裝置 ──────────────────────────────────────────────────────────────────────
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -128,6 +122,41 @@ _stage2_model: POP909Transformer | None = None
 _stage2_tokenizer: REMI | None = None
 _stage2_chord_to_id: dict | None = None
 
+# ── 和弦格式正規化（C:maj → C, A:min → Am, N → N）─────────────────────────
+_QUALITY_SUFFIX: dict[str, str] = {
+    "maj": "",
+    "min": "m",
+    "dim": "dim",
+    "aug": "aug",
+    "sus2": "sus2",
+    "sus4": "sus4",
+    "maj7": "maj7",
+    "min7": "m7",
+    "7": "7",
+    "hdim7": "m7b5",
+    "dim7": "dim7",
+    "minmaj7": "mM7",
+    "maj6": "6",
+    "min6": "m6",
+}
+
+
+def _normalize_chord_name(raw: str) -> str:
+    """
+    把訓練字典格式的和弦名稱轉為前端可讀的標準格式。
+    例：C:maj → C, A:min → Am, G:maj/5 → G, N → N
+    """
+    if not raw or raw in ("N", "PAD", "BOS", "EOS", "MASK"):
+        return "N"
+    # 去掉轉位斜線（e.g. G:maj/3 → G:maj）
+    raw_base = raw.split("/")[0]
+    if ":" not in raw_base:
+        return raw_base  # 已是 plain 格式
+    root, quality = raw_base.split(":", 1)
+    suffix = _QUALITY_SUFFIX.get(quality, quality)  # 找不到就原樣保留
+    return root + suffix
+
+
 _stage1_cache: dict[str, tuple] = {}  # predictor_type → (model, chord_to_id)
 
 
@@ -165,18 +194,43 @@ def _top_k_top_p_filtering(
     return logits
 
 
-def _detect_key_offset(midi_path: str) -> tuple[int, int]:
-    """用 music21 分析調性，回傳 (to_c_offset, back_offset)。"""
+def _detect_key_offset(midi_path: str) -> tuple[int, int, str]:
+    """
+    偵測調性並回傳 (to_c_offset, back_offset, key_str)。
+    優先順序：
+      1. 讀取 MIDI 檔案內建的 key_signature Meta Event。
+         若 to_c_offset != 0（非預設 C大調/A小調），則直接信任。
+      2. 若為 0（極可能是預設值）或無標記時，改用 music21 演算法分析。
+    """
+    key_str = midi_service.read_key_str_from_midi(midi_path)
+    embedded = midi_service.read_key_signature_from_midi(midi_path)
+    if embedded is not None:
+        to_c_offset, back_offset, _ = embedded
+        if to_c_offset != 0:
+            return to_c_offset, back_offset, (key_str if key_str else "C")
+
+    # Fallback 或 內建為 C 大調時，改用 music21 分析音符組成
+    logger.info("MIDI 無內建調號或為預設 C 大調，改用 music21 分析...")
     m21score = m21converter.parse(midi_path)
     detected = m21score.analyze("key")
     tonic_name = detected.tonic.name
     mode = detected.mode
-    logger.info("調性分析結果：%s %s", tonic_name, mode)
+    logger.info("music21 調性分析結果：%s %s", tonic_name, mode)
+
+    # music21 的 tonic_name + mode 轉為 mido 可讀的 key_signature 格式
+    # 例如 music21 為 'a', 'minor' -> 'Am'；'c', 'major' -> 'C'
+    if mode == "minor":
+        key_str = tonic_name + "m"
+    else:
+        key_str = tonic_name
+    key_str = key_str.replace("-", "b")
 
     key_map = KEY_MAP_MINOR if mode == "minor" else KEY_MAP_MAJOR
     offset = key_map.get(tonic_name, 0)
-    logger.info("轉調偏移：至 C=%+d, 還原=%+d", offset, -offset)
-    return offset, -offset
+    logger.info("轉調偏移：至 C=%+d, 還原=%+d, 調號=%s", offset, -offset, key_str)
+    return offset, -offset, key_str
+
+
 
 
 def _load_midi(path: str) -> symusic.Score:
@@ -282,9 +336,9 @@ def _get_stage1(predictor_type: str) -> tuple[POP909ChordPredictor, dict, int, i
     """回傳 (chord_model, chord_to_id, bos_id, eos_id) for the given predictor_type."""
     global _stage1_cache
     if predictor_type not in _stage1_cache:
-        stage1_dir = _STAGE1_DIRS[predictor_type]
-        ckpt_path = os.path.join(stage1_dir, "chord_predictor_epoch_30.pth")
-        vocab_path = os.path.join(stage1_dir, "chord_vocab.json")
+        two_stage_dir = os.path.join(_RESOURCES, "twoStage")
+        ckpt_path = os.path.join(two_stage_dir, f"{predictor_type}_model.pth")
+        vocab_path = os.path.join(two_stage_dir, f"{predictor_type}_chord_vocab.json")
 
         _, stage2_tokenizer, _ = _get_stage2()
         src_vocab_size = len(stage2_tokenizer.vocab)
@@ -332,15 +386,20 @@ def _predict_window_chords(
     chord_to_id: dict,
     id_to_chord: dict,
     predictor_type: str,
+    prefix_chord_ids: list | None = None,
 ) -> list:
     """通用 Stage 1 和弦預測 Router，相容 std / bar / nar 三種架構。"""
     src_tensor = torch.tensor([src_ids], dtype=torch.long).to(DEVICE)
-    temp_stage1 = 0.9
+    temp_stage1 = 1.2
     top_k_stage1 = 3
 
     if predictor_type == "nar":
         mask_id = chord_to_id.get("MASK", 0)
         tgt_in = [mask_id] * target_len
+        if prefix_chord_ids:
+            for i in range(min(len(prefix_chord_ids), target_len)):
+                tgt_in[i] = prefix_chord_ids[i]
+
         tgt_tensor = torch.tensor([tgt_in], dtype=torch.long).to(DEVICE)
 
         with torch.autocast(
@@ -355,6 +414,10 @@ def _predict_window_chords(
         forced_token = None
 
         for step in range(target_len):
+            if prefix_chord_ids and step < len(prefix_chord_ids):
+                pred_chord_ids.append(prefix_chord_ids[step])
+                continue
+
             step_logits = logits[0, step, :].clone() / temp_stage1
 
             # --- 鎖定規則 (Smoothing) ---
@@ -471,7 +534,17 @@ def _predict_window_chords(
 
     # ── AR / Bar-AR ──────────────────────────────────────────────────────────
     tgt_ids = [bos_id]
-    for pair_idx in range(target_len):
+    start_pair_idx = 0
+    if prefix_chord_ids:
+        start_pair_idx = min(len(prefix_chord_ids), target_len)
+        for pair_idx in range(start_pair_idx):
+            if predictor_type == "bar":
+                pos_num = (pair_idx % steps_per_bar) + 1
+                pos_token = chord_to_id.get(f"Pos_{pos_num}", 0)
+                tgt_ids.append(pos_token)
+            tgt_ids.append(prefix_chord_ids[pair_idx])
+
+    for pair_idx in range(start_pair_idx, target_len):
         if predictor_type == "bar":
             pos_num = (pair_idx % steps_per_bar) + 1
             pos_token = chord_to_id.get(f"Pos_{pos_num}", 0)
@@ -510,7 +583,7 @@ def _predict_window_chords(
         for idx in invalid_ids:
             step_logits[idx] = -float("Inf")
 
-        top_v, top_idx = torch.topk(step_logits, 4)
+        top_v, top_idx = torch.topk(step_logits, 3)
         probs = torch.softmax(top_v, dim=-1)
         sampled_i = torch.multinomial(probs, 1).item()
         next_id = top_idx[sampled_i].item()
@@ -583,9 +656,10 @@ def _generate_window(
 
 def _run_inference(
     melody_midi_bytes: bytes,
-    predictor_type: Literal["std", "bar", "nar"],
+    predictor_type: Literal["bar", "nar"],
     complexity: float = 0.5,
     creativity: float = 1.0,
+    original_midi_bytes: bytes | None = None,  # 完整原始 MIDI，用於調性分析
 ) -> tuple[bytes, list[str]]:
     # ── 載入模型 ──────────────────────────────────────────────────────────────
     stage2_model, tokenizer, stage2_chord_to_id = _get_stage2()
@@ -618,7 +692,7 @@ def _run_inference(
         ticks_per_bar = int(4 * tpq * numerator / denominator)
         all_notes = sorted(orig_score.tracks[0].notes, key=lambda n: n.time)
         last_tick = max(n.time + n.duration for n in all_notes)
-        total_bars = max(1, last_tick // ticks_per_bar)
+        total_bars = int(math.ceil(last_tick / ticks_per_bar)) + 1
 
         logger.info(
             "MIDI 解析完成。TPQ=%d, 拍號=%d/%d, 總長度=%d 小節, 音符數=%d",
@@ -630,7 +704,25 @@ def _run_inference(
         )
 
         # ── 調性分析 ────────────────────────────────────────────────────────────
-        to_c_offset, back_offset = _detect_key_offset(tmp_path)
+        # 優先使用完整原始 MIDI 分析（單軌旋律可能被 music21 誤判調性）
+        if original_midi_bytes:
+            with tempfile.NamedTemporaryFile(
+                suffix=".mid", prefix="orig_tmp_", delete=False
+            ) as f_orig:
+                f_orig.write(original_midi_bytes)
+                orig_tmp_path = f_orig.name
+            try:
+                to_c_offset, back_offset, key_str = _detect_key_offset(orig_tmp_path)
+                print(
+                    f"[TwoStage] 使用完整原始 MIDI 分析調性: to_c={to_c_offset:+d}, back={back_offset:+d}, 調號={key_str}",
+                    flush=True,
+                )
+            finally:
+                if os.path.exists(orig_tmp_path):
+                    os.remove(orig_tmp_path)
+        else:
+            to_c_offset, back_offset, key_str = _detect_key_offset(tmp_path)
+
 
         # ── 滑動視窗 ────────────────────────────────────────────────────────────
         window_starts = list(range(0, total_bars - WINDOW_BARS + 1, STRIDE_BARS))
@@ -641,6 +733,7 @@ def _run_inference(
 
         acc_notes_all: list = []
         prefix_token_ids: list = []
+        prefix_chord_ids_stage1: list = []  # 儲存前一視窗的和弦 token (Stage 1 Vocab)
         final_chords_dict: dict[int, list[str]] = {}
 
         for w_idx, bar_start in enumerate(window_starts):
@@ -684,8 +777,16 @@ def _run_inference(
                 stage1_chord_to_id,
                 stage1_id_to_chord,
                 predictor_type,
+                prefix_chord_ids_stage1,
             )
             logger.debug("Stage 1 預測和弦 ID 數：%d", len(chords_ids_stage1))
+
+            # 準備下一個視窗的 Stage 1 前綴（取最後 PREFIX_BARS 小節的和弦）
+            prefix_len = PREFIX_BARS * steps_per_bar
+            if len(chords_ids_stage1) >= prefix_len:
+                prefix_chord_ids_stage1 = chords_ids_stage1[-prefix_len:]
+            else:
+                prefix_chord_ids_stage1 = []
 
             # 轉回 Stage 2 vocab 索引
             chord_names = [
@@ -705,7 +806,7 @@ def _run_inference(
                 for beat in range(steps_per_bar):
                     idx = b * steps_per_bar + beat
                     if idx < len(chord_names):
-                        bar_chords.append(chord_names[idx].split("_")[0])
+                        bar_chords.append(_normalize_chord_name(chord_names[idx]))
                 final_chords_dict[bar_start + b] = bar_chords
 
             logger.debug("Stage 2 和弦 ID 數：%d", len(chords_ids))
@@ -820,7 +921,27 @@ def _run_inference(
             sorted_chord_list = [
                 final_chords_dict.get(i, []) for i in range(total_bars)
             ]
+
+            # ── 和弦名稱轉調回原調 ─────────────────────────────────────────────
+            # 模型預測的和弦是在 C/Am 空間，需用 back_offset 還原至原始調性
+            sorted_chord_list = midi_service.transpose_chord_list(
+                sorted_chord_list, back_offset
+            )
+
+
+            try:
+                midi_b = midi_service.add_chords_to_midi(midi_b, sorted_chord_list, key_signature=key_str)
+            except Exception as e:
+                logger.warning(f"無法將和弦標記寫入 MIDI: {e}")
+
+
+
+
+
+
+
             return midi_b, sorted_chord_list
+
         finally:
             if os.path.exists(out_path):
                 os.remove(out_path)
@@ -835,28 +956,35 @@ def _run_inference(
 # ============================================================
 
 
-async def generate_std(
-    melody_midi_bytes: bytes, complexity: float = 0.5, creativity: float = 1.0
-) -> tuple[bytes, list[list[str]]]:
-    """Standard AR 和弦預測器 (pop909_chord_predictor)。"""
-    return await asyncio.to_thread(
-        _run_inference, melody_midi_bytes, "std", complexity, creativity
-    )
-
-
 async def generate_bar(
-    melody_midi_bytes: bytes, complexity: float = 0.5, creativity: float = 1.0
+    melody_midi_bytes: bytes,
+    complexity: float = 0.5,
+    creativity: float = 1.0,
+    original_midi_bytes: bytes | None = None,
 ) -> tuple[bytes, list[list[str]]]:
     """Bar-level AR 和弦預測器 (pop909_chord_predictor_bar)。"""
     return await asyncio.to_thread(
-        _run_inference, melody_midi_bytes, "bar", complexity, creativity
+        _run_inference,
+        melody_midi_bytes,
+        "bar",
+        complexity,
+        creativity,
+        original_midi_bytes,
     )
 
 
 async def generate_nar(
-    melody_midi_bytes: bytes, complexity: float = 0.5, creativity: float = 1.0
+    melody_midi_bytes: bytes,
+    complexity: float = 0.5,
+    creativity: float = 1.0,
+    original_midi_bytes: bytes | None = None,
 ) -> tuple[bytes, list[list[str]]]:
     """NAR 和弦預測器 (pop909_chord_predictor_nar)。"""
     return await asyncio.to_thread(
-        _run_inference, melody_midi_bytes, "nar", complexity, creativity
+        _run_inference,
+        melody_midi_bytes,
+        "nar",
+        complexity,
+        creativity,
+        original_midi_bytes,
     )

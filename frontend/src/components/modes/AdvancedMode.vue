@@ -33,6 +33,9 @@
               </div>
             </div>
           </label>
+          <button @click="loadDemoSong" class="modern-btn btn-outline btn-demo mt-10">
+            🎵 Load Demo Song (如果可以)
+          </button>
         </div>
 
         <transition name="fade-up">
@@ -60,9 +63,9 @@
                   <label>Inference Mode:</label>
                   <select v-model="selectedInferenceMode" class="modern-select">
                     <option value="oneStage">One-Stage (Direct Generation)</option>
-                    <option value="twoStage-std">Two-Stage Std (AR Chords)</option>
-                    <option value="twoStage-bar">Two-Stage Bar</option>
+                    <option value="twoStage-bar">Two-Stage AR (Autoregressive)</option>
                     <option value="twoStage-nar">Two-Stage NAR (Non-Autoregressive)</option>
+                    <option value="threeStage">Three-Stage (For Long Song)</option>
                   </select>
                 </div>
 
@@ -141,11 +144,14 @@
             <a
               v-if="advancedResultMidiUrl"
               :href="advancedResultMidiUrl"
-              download="advanced_accompaniment.mid"
+              :download="advancedResultDownloadName"
               class="modern-btn btn-outline btn-compact"
             >
               ↓ MIDI
             </a>
+            <span v-if="advancedCurrentParams" class="params-badge">
+              {{ advancedCurrentParams }}
+            </span>
           </div>
         </div>
 
@@ -170,6 +176,27 @@
           </button>
         </div>
 
+        <div v-if="showLengthWarning" class="length-warning mt-10">
+          <svg
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path
+              d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+            ></path>
+            <line x1="12" y1="9" x2="12" y2="13"></line>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+          Notice: The uploaded track exceeds 32 measures. Only the first 32 measures are previewed
+          and played.
+        </div>
+
         <div class="advanced-vexflow-wrapper mt-20" style="overflow-x: auto; overflow-y: hidden">
           <div ref="advancedVexflowContainer" class="advanced-vexflow-container"></div>
         </div>
@@ -190,6 +217,7 @@ import {
   Formatter,
   Dot,
   StaveConnector,
+  StaveTie,
   Annotation,
   Barline,
 } from 'vexflow'
@@ -211,6 +239,12 @@ const advancedVexflowContainer = ref(null)
 const advancedGenerationHistory = ref([])
 const currentAdvancedHistoryIndex = ref(-1)
 const isPlayingAdvanced = ref(false)
+const showLengthWarning = ref(false)
+const detectedKeySignature = ref(null) // e.g. 'G' or 'Bb'
+
+// Duration step resolution: 1 step = 16th note
+const STEPS_PER_MEASURE = 16
+const detectedBpm = ref(120)
 
 const diatonicScale = [
   { step: 'c/4', basePitch: 60 },
@@ -233,8 +267,48 @@ const advancedResultMidiUrl = computed(() => {
   return advancedGenerationHistory.value[currentAdvancedHistoryIndex.value]?.midiUrl
 })
 
+// Task 4: Dynamic download filename containing mode/complexity/creativity
+const advancedResultDownloadName = computed(() => {
+  if (currentAdvancedHistoryIndex.value === -1) return 'accompaniment.mid'
+  const item = advancedGenerationHistory.value[currentAdvancedHistoryIndex.value]
+  if (!item?.params) return 'accompaniment.mid'
+  const { mode, complexity, creativity } = item.params
+  return `accom_${mode}_c${complexity}_t${creativity}.mid`
+})
+
+// Task 4: Params display string for UI badge
+const advancedCurrentParams = computed(() => {
+  if (currentAdvancedHistoryIndex.value === -1) return null
+  const item = advancedGenerationHistory.value[currentAdvancedHistoryIndex.value]
+  if (!item?.params) return null
+  const { mode, complexity, creativity } = item.params
+  return `${mode} | C:${complexity} T:${creativity}`
+})
+
 const initSynth = async () => {
   await audioService.init()
+}
+
+// Task 5: shared MIDI parsing helper — extracts notes and key signature from an ArrayBuffer
+const parseMidiBuffer = (arrayBuffer) => {
+  const midi = new Midi(arrayBuffer)
+  // Task 5: detect key signature
+  const keySigs = midi.header?.keySignatures
+  if (keySigs && keySigs.length > 0) {
+    const ks = keySigs[0]
+    let vfKey = ks.key
+    if (ks.scale === 'minor' && !vfKey.endsWith('m')) vfKey += 'm'
+    detectedKeySignature.value = vfKey
+  } else {
+    detectedKeySignature.value = null
+  }
+
+  if (midi.header?.tempos?.length > 0) {
+    detectedBpm.value = midi.header.tempos[0].bpm
+  } else {
+    detectedBpm.value = 120
+  }
+  return midi
 }
 
 const handleFileUpload = async (event) => {
@@ -246,11 +320,12 @@ const handleFileUpload = async (event) => {
   selectedTrackIndex.value = ''
   advancedGenerationHistory.value = []
   currentAdvancedHistoryIndex.value = -1
+  showLengthWarning.value = false
 
   try {
     const arrayBuffer = await file.arrayBuffer()
     rawMidiBuffer.value = arrayBuffer
-    const midi = new Midi(arrayBuffer)
+    const midi = parseMidiBuffer(arrayBuffer)
     const trackInfoList = []
 
     midi.tracks.forEach((track, originalIndex) => {
@@ -269,6 +344,40 @@ const handleFileUpload = async (event) => {
   }
 }
 
+// Task 1: load static demo song from /public/test_midis/demo.mid
+const loadDemoSong = async () => {
+  try {
+    const response = await fetch('/test_midis/demo.mid')
+    if (!response.ok) throw new Error('Demo file not found')
+    const arrayBuffer = await response.arrayBuffer()
+    const file = new File([arrayBuffer], '如果可以.mid', { type: 'audio/midi' })
+
+    rawFile.value = file
+    parsedTracks.value = []
+    selectedTrackIndex.value = ''
+    advancedGenerationHistory.value = []
+    currentAdvancedHistoryIndex.value = -1
+    showLengthWarning.value = false
+
+    rawMidiBuffer.value = arrayBuffer
+    const midi = parseMidiBuffer(arrayBuffer)
+    const trackInfoList = []
+    midi.tracks.forEach((track, originalIndex) => {
+      if (track.notes.length > 0) {
+        trackInfoList.push({
+          originalIndex,
+          noteCount: track.notes.length,
+          instrumentName: track.instrument?.name || 'Unknown Instrument',
+        })
+      }
+    })
+    parsedTracks.value = trackInfoList
+  } catch (error) {
+    console.error('[Demo Load Error]', error)
+    alert('Failed to load demo song.')
+  }
+}
+
 watch(selectedTrackIndex, (newIndex) => {
   if (newIndex === '' || !rawMidiBuffer.value) return
   try {
@@ -277,8 +386,12 @@ watch(selectedTrackIndex, (newIndex) => {
 
     const newMelodyData = []
     targetTrack.notes.forEach((note) => {
-      const step = Math.round(note.time / 0.25)
-      const duration = Math.round(note.duration / 0.25) || 1
+      // Task 3: 16th note resolution — map ticks to steps (1 step = 16th note)
+      // @tonejs/midi uses header.ppq (pulses per quarter note), NOT ticksPerBeat
+      const ppq = originalMidi.header.ppq || 480
+      const ticksPerStep = ppq / 4
+      const step = Math.round(note.ticks / ticksPerStep)
+      const duration = Math.max(1, Math.round(note.durationTicks / ticksPerStep))
       let accidental = ''
       if (note.name.includes('#')) accidental = '#'
       if (note.name.includes('b')) accidental = 'b'
@@ -291,6 +404,7 @@ watch(selectedTrackIndex, (newIndex) => {
         melodyData: newMelodyData,
         aiData: [],
         chords: [],
+        params: null,
       },
     ]
     currentAdvancedHistoryIndex.value = 0
@@ -320,8 +434,10 @@ const submitMidiFile = async () => {
       jsonData = JSON.parse(jsonStr)
       if (import.meta.env.DEV) console.log('[API] Response parsed:', jsonData)
     } catch (e) {
-      // JSON 解析失敗通常代表後端回傳了非預期格式（如 HTML 錯誤頁）
-      console.error('[API Error] 回應不是合法的 JSON，這可能代表後端發生了錯誤:', jsonStr.slice(0, 200))
+      console.error(
+        '[API Error] 回應不是合法的 JSON，這可能代表後端發生了錯誤:',
+        jsonStr.slice(0, 200),
+      )
       throw new Error('後端回應格式錯誤，請檢查後端日誌')
     }
 
@@ -333,7 +449,6 @@ const submitMidiFile = async () => {
       const bytes = new Uint8Array(len)
       for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i)
       blob = new Blob([bytes], { type: 'audio/midi' })
-      console.log('chords:', jsonData.chords)
       if (jsonData.chords) chordLabels = jsonData.chords
     } else {
       blob = new Blob([jsonStr], { type: 'audio/midi' })
@@ -345,11 +460,16 @@ const submitMidiFile = async () => {
 
     const newMelodyData = []
     const newAiData = []
-    midi.tracks.forEach((track, index) => {
-      const targetArray = index === 0 && midi.tracks.length > 1 ? newMelodyData : newAiData
+    // Task 3: skip the Chords marker track (no notes)
+    const noteTracks = midi.tracks.filter((t) => t.notes.length > 0)
+    noteTracks.forEach((track, index) => {
+      const targetArray = index === 0 && noteTracks.length > 1 ? newMelodyData : newAiData
       track.notes.forEach((note) => {
-        const step = Math.round(note.time / 0.25)
-        const duration = Math.round(note.duration / 0.25) || 1
+        // Task 3: 16th note resolution
+        const ppq = midi.header.ppq || 480
+        const ticksPerStep = ppq / 4
+        const step = Math.round(note.ticks / ticksPerStep)
+        const duration = Math.max(1, Math.round(note.durationTicks / ticksPerStep))
         let accidental = ''
         if (note.name.includes('#')) accidental = '#'
         if (note.name.includes('b')) accidental = 'b'
@@ -364,11 +484,17 @@ const submitMidiFile = async () => {
       advancedGenerationHistory.value = []
     }
 
+    // Task 4: store generation params with this history entry
     advancedGenerationHistory.value.push({
       midiUrl: url,
       melodyData: newMelodyData,
       aiData: newAiData,
       chords: chordLabels,
+      params: {
+        mode: selectedInferenceMode.value,
+        complexity: generationComplexity.value,
+        creativity: generationCreativity.value,
+      },
     })
     currentAdvancedHistoryIndex.value = advancedGenerationHistory.value.length - 1
     nextTick(() => renderAdvancedVexFlow())
@@ -409,27 +535,177 @@ const renderAdvancedVexFlow = () => {
   const chordsSrc = historyItem.chords || []
   const isGrandStaff = aiDataSrc.length > 0
 
+  // ── 調號隱式升降記號集合 ──────────────────────────────────────────────────
+  // Key: 音名字母 (lowercase), Value: '#' | 'b'
+  // 屬於調號的音符不需要再標示個別升降記號
+  const KEY_SIG_ACCIDENTALS = {
+    // 升號大調
+    G: { f: '#' },
+    D: { f: '#', c: '#' },
+    A: { f: '#', c: '#', g: '#' },
+    E: { f: '#', c: '#', g: '#', d: '#' },
+    B: { f: '#', c: '#', g: '#', d: '#', a: '#' },
+    'F#': { f: '#', c: '#', g: '#', d: '#', a: '#', e: '#' },
+    'C#': { f: '#', c: '#', g: '#', d: '#', a: '#', e: '#', b: '#' },
+    // 降號大調
+    F: { b: 'b' },
+    Bb: { b: 'b', e: 'b' },
+    Eb: { b: 'b', e: 'b', a: 'b' },
+    Ab: { b: 'b', e: 'b', a: 'b', d: 'b' },
+    Db: { b: 'b', e: 'b', a: 'b', d: 'b', g: 'b' },
+    Gb: { b: 'b', e: 'b', a: 'b', d: 'b', g: 'b', c: 'b' },
+    Cb: { b: 'b', e: 'b', a: 'b', d: 'b', g: 'b', c: 'b', f: 'b' },
+  }
+  // 取調號（去掉小調後綴 m），若查不到則空 map
+  const keySigAcc = detectedKeySignature.value
+    ? KEY_SIG_ACCIDENTALS[detectedKeySignature.value.replace('m', '')] || {}
+    : {}
+  // 判斷某音是否已被調號涵蓋（不需額外標記）
+  const isCoveredByKeySig = (letter, acc) => acc !== '' && keySigAcc[letter.toLowerCase()] === acc
+
+  // 判斷調號是否是降號系
+  const isFlatKey =
+    detectedKeySignature.value &&
+    ['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb', 'Cb', 'Dm', 'Gm', 'Cm', 'Fm', 'Bbm', 'Ebm', 'Abm'].includes(
+      detectedKeySignature.value,
+    )
+
+  // 根據調號優先選擇同音異名 (Enharmonic)
+  const getEnharmonicNote = (pitch) => {
+    const pc = pitch % 12
+    const octave = Math.floor(pitch / 12) - 1
+
+    // 無升降的自然音
+    const naturalMap = {
+      0: { letter: 'c', acc: '' },
+      2: { letter: 'd', acc: '' },
+      4: { letter: 'e', acc: '' },
+      5: { letter: 'f', acc: '' },
+      7: { letter: 'g', acc: '' },
+      9: { letter: 'a', acc: '' },
+      11: { letter: 'b', acc: '' },
+    }
+
+    if (naturalMap[pc] !== undefined) {
+      return {
+        vfKey: `${naturalMap[pc].letter}/${octave}`,
+        letter: naturalMap[pc].letter,
+        acc: '',
+      }
+    }
+
+    // 變化音：1, 3, 6, 8, 10
+    if (isFlatKey) {
+      const flatMap = {
+        1: { letter: 'd', acc: 'b' },
+        3: { letter: 'e', acc: 'b' },
+        6: { letter: 'g', acc: 'b' },
+        8: { letter: 'a', acc: 'b' },
+        10: { letter: 'b', acc: 'b' },
+      }
+      return {
+        vfKey: `${flatMap[pc].letter}b/${octave}`,
+        letter: flatMap[pc].letter,
+        acc: 'b',
+      }
+    } else {
+      const sharpMap = {
+        1: { letter: 'c', acc: '#' },
+        3: { letter: 'd', acc: '#' },
+        6: { letter: 'f', acc: '#' },
+        8: { letter: 'g', acc: '#' },
+        10: { letter: 'a', acc: '#' },
+      }
+      return {
+        vfKey: `${sharpMap[pc].letter}#/${octave}`,
+        letter: sharpMap[pc].letter,
+        acc: '#',
+      }
+    }
+  }
+
+  // 根據調號決定和弦名稱要是升號還是降號
+  const getEnharmonicChord = (chord) => {
+    if (!chord || chord === 'N' || chord === 'X') return chord
+
+    // 若是降號系調號，將升號根音轉化為同音異名的降號
+    if (isFlatKey) {
+      let root = chord.slice(0, 1)
+      let rest = chord.slice(1)
+      if (chord.length > 1 && chord[1] === '#') {
+        root = chord.slice(0, 2)
+        rest = chord.slice(2)
+      }
+
+      const sharpToFlatMap = {
+        'C#': 'Db',
+        'D#': 'Eb',
+        'F#': 'Gb',
+        'G#': 'Ab',
+        'A#': 'Bb',
+      }
+
+      if (sharpToFlatMap[root]) {
+        return sharpToFlatMap[root] + rest
+      }
+    } else {
+      // 升號系或無調號（預設）
+      let root = chord.slice(0, 1)
+      let rest = chord.slice(1)
+      if (chord.length > 1 && chord[1] === 'b') {
+        root = chord.slice(0, 2)
+        rest = chord.slice(2)
+      }
+
+      const flatToSharpMap = {
+        Db: 'C#',
+        Eb: 'D#',
+        Gb: 'F#',
+        Ab: 'G#',
+        Bb: 'A#',
+      }
+
+      if (flatToSharpMap[root]) {
+        return flatToSharpMap[root] + rest
+      }
+    }
+    return chord
+  }
+
   // 💡 問題 3 修復：根據所有音符的所在位置，動態計算「整份樂譜的總小節數」
   const maxMelodyStep =
     melodyDataSrc.length > 0 ? Math.max(...melodyDataSrc.map((n) => n.step + n.duration)) : 0
   const maxAiStep =
     aiDataSrc.length > 0 ? Math.max(...aiDataSrc.map((n) => n.step + n.duration)) : 0
   const maxStep = Math.max(maxMelodyStep, maxAiStep)
-  const TOTAL_MEASURES = Math.max(1, Math.ceil(maxStep / 8)) // 計算出確切的總小節數
 
+  const computedTotalMeasures = Math.max(1, Math.ceil(maxStep / STEPS_PER_MEASURE))
+  if (computedTotalMeasures > 32) {
+    showLengthWarning.value = true
+  } else {
+    showLengthWarning.value = false
+  }
+  const TOTAL_MEASURES = Math.min(computedTotalMeasures, 32)
+
+  const scale = 0.85 // 縮小比例以適配一行 4 小節
+  const logicalAvailableWidth = (container.clientWidth - 20) / scale
   const MEASURE_WIDTH = 300
-  const CLEF_WIDTH = 110
+  const CLEF_WIDTH = 140
   const ROW_HEIGHT = isGrandStaff ? 280 : 180
 
-  const availableWidth = container.clientWidth - 20
-  const MEASURES_PER_ROW = Math.max(1, Math.floor((availableWidth - CLEF_WIDTH) / MEASURE_WIDTH))
+  const MEASURES_PER_ROW = Math.max(
+    1,
+    Math.floor((logicalAvailableWidth - CLEF_WIDTH) / MEASURE_WIDTH),
+  )
   const TOTAL_ROWS = Math.ceil(TOTAL_MEASURES / MEASURES_PER_ROW)
 
   const renderer = new Renderer(container, Renderer.Backends.SVG)
   // 🌟 優化：增加 10px 緩衝區確保最後一根小節線不被切掉
-  const canvasWidth = CLEF_WIDTH + Math.min(TOTAL_MEASURES, MEASURES_PER_ROW) * MEASURE_WIDTH + 10
-  renderer.resize(canvasWidth, TOTAL_ROWS * ROW_HEIGHT)
+  const canvasWidth =
+    (CLEF_WIDTH + Math.min(TOTAL_MEASURES, MEASURES_PER_ROW) * MEASURE_WIDTH + 10) * scale
+  renderer.resize(canvasWidth, TOTAL_ROWS * ROW_HEIGHT * scale)
   const context = renderer.getContext()
+  context.scale(scale, scale)
 
   let globalMeasureIndex = 0
 
@@ -437,12 +713,18 @@ const renderAdvancedVexFlow = () => {
     if (globalMeasureIndex >= TOTAL_MEASURES) break
 
     const rowY = row * ROW_HEIGHT
-    // 🌟 優化：x 從 0 改為 25，寬度從 CLEF_WIDTH 改為 85 (25+85=110)
-    const trebleClefStave = new Stave(25, rowY + 40, 85).addClef('treble').setContext(context)
+    // 繪製每行開頭的譜號與調號
+    const trebleClefStave = new Stave(25, rowY + 40, CLEF_WIDTH - 25)
+      .addClef('treble')
+      .setContext(context)
+    if (detectedKeySignature.value) trebleClefStave.addKeySignature(detectedKeySignature.value)
     if (row === 0) trebleClefStave.addTimeSignature('4/4')
 
     if (isGrandStaff) {
-      const bassClefStave = new Stave(25, rowY + 140, 85).addClef('bass').setContext(context)
+      const bassClefStave = new Stave(25, rowY + 140, CLEF_WIDTH - 25)
+        .addClef('bass')
+        .setContext(context)
+      if (detectedKeySignature.value) bassClefStave.addKeySignature(detectedKeySignature.value)
       if (row === 0) bassClefStave.addTimeSignature('4/4')
 
       // 🌟 同步拍號起點
@@ -510,27 +792,39 @@ const renderAdvancedVexFlow = () => {
       trebleStave.draw()
       if (bassStave) bassStave.draw()
 
-      const startStep = globalMeasureIndex * 8
-      const endStep = (globalMeasureIndex + 1) * 8
+      const startStep = globalMeasureIndex * STEPS_PER_MEASURE
+      const endStep = (globalMeasureIndex + 1) * STEPS_PER_MEASURE
 
-      // 預先計算本小節每個 step 應顯示的和弦 Annotation
-      // 優先規則：第一拍一定顯示
-      // 次要規則：後續拍與前一拍和弦不同時才顯示
-      const chordAnnotationMap = new Map() // step → chordLabel
+      // Task 2: chord annotation — range-based lookup per beat
+      // Each beat = STEPS_PER_MEASURE/4 steps (4 steps at 16th resolution)
+      const STEPS_PER_BEAT = STEPS_PER_MEASURE / 4
+      const chordAnnotationMap = new Map() // beatStartStep → chordLabel
       const measureChords = Array.isArray(chordsSrc[globalMeasureIndex])
         ? chordsSrc[globalMeasureIndex]
         : []
       if (measureChords.length > 0) {
+        let prevChord = ''
         for (let beat = 0; beat < measureChords.length; beat++) {
-          const chord = measureChords[beat] || ''
-          if (!chord) continue
-          const beatStartStep = startStep + beat * 2
-          const isFirstBeat = beat === 0
-          const prevChord = measureChords[beat - 1] || ''
-          if (isFirstBeat || chord !== prevChord) {
+          let chord = measureChords[beat] || ''
+          if (!chord || chord === 'N') continue
+          chord = getEnharmonicChord(chord)
+          const beatStartStep = startStep + beat * STEPS_PER_BEAT
+          if (beat === 0 || chord !== prevChord) {
             chordAnnotationMap.set(beatStartStep, chord)
+            prevChord = chord
           }
         }
+      }
+
+      // Helper: find the chord annotation for a given note step (range lookup)
+      const getChordAt = (step) => {
+        // Find the last beatStartStep <= step that has an annotation
+        let bestKey = null
+        for (const [k] of chordAnnotationMap) {
+          if (k <= step && (bestKey === null || k > bestKey)) bestKey = k
+        }
+        // Only show annotation on the exact beat boundary note
+        return chordAnnotationMap.has(step) ? chordAnnotationMap.get(step) : null
       }
 
       // ==================== 繪製高音譜 ====================
@@ -540,78 +834,83 @@ const renderAdvancedVexFlow = () => {
         const foundNote = melodyDataSrc.find((n) => n.step === trebleStep)
         if (foundNote) {
           let renderDur = Math.min(foundNote.duration, endStep - trebleStep)
+          const needsTie = foundNote.duration > endStep - trebleStep
           let vexTicks = 1
-          let durStr = '8'
+          let durStr = '16'
           let isDotted = false
-          if (renderDur >= 8) {
+          if (renderDur >= 16) {
             durStr = 'w'
+            vexTicks = 16
+          } else if (renderDur >= 12) {
+            durStr = 'hd'
+            isDotted = true
+            vexTicks = 12
+          } else if (renderDur >= 8) {
+            durStr = 'h'
             vexTicks = 8
           } else if (renderDur >= 6) {
-            durStr = 'hd'
+            durStr = 'qd'
             isDotted = true
             vexTicks = 6
           } else if (renderDur >= 4) {
-            durStr = 'h'
+            durStr = 'q'
             vexTicks = 4
           } else if (renderDur >= 3) {
-            durStr = 'qd'
+            durStr = '8d'
             isDotted = true
             vexTicks = 3
           } else if (renderDur >= 2) {
-            durStr = 'q'
+            durStr = '8'
             vexTicks = 2
           } else {
-            durStr = '8'
+            durStr = '16'
             vexTicks = 1
           }
 
-          let vfKey = 'b/4'
-          const accOffset = foundNote.accidental === '#' ? 1 : foundNote.accidental === 'b' ? -1 : 0
-          const expectedBase = foundNote.pitch - accOffset
-          const noteMatch = diatonicScale.find((d) => d.basePitch === expectedBase)
-
-          if (noteMatch) vfKey = noteMatch.step
-          else {
-            const exact = diatonicScale.find((d) => d.basePitch === foundNote.pitch)
-            if (exact) vfKey = exact.step
-            else {
-              const sharpMatch = diatonicScale.find((d) => d.basePitch + 1 === foundNote.pitch)
-              if (sharpMatch) {
-                vfKey = sharpMatch.step
-                if (!foundNote.accidental) foundNote.accidental = '#'
-              }
-            }
-          }
-          if (foundNote.accidental) vfKey = vfKey.replace('/', `${foundNote.accidental}/`)
-
+          const { vfKey, letter, acc } = getEnharmonicNote(foundNote.pitch)
           const staveNote = new StaveNote({ clef: 'treble', keys: [vfKey], duration: durStr })
-          if (foundNote.accidental) staveNote.addModifier(new Accidental(foundNote.accidental))
+          // 加升降記號前先判斷是否已被調號涵蓋
+          if (acc && !isCoveredByKeySig(letter, acc)) staveNote.addModifier(new Accidental(acc))
           if (isDotted) staveNote.addModifier(new Dot(0), 0)
 
-          // 查 map：此 step 若有需要顯示的和弦就掛上 Annotation
-          if (chordAnnotationMap.has(trebleStep)) {
+          // chord annotation via range lookup
+          const chordAtStep = getChordAt(trebleStep)
+          if (chordAtStep) {
             staveNote.addModifier(
-              new Annotation(chordAnnotationMap.get(trebleStep))
+              new Annotation(chordAtStep)
                 .setFont('Arial', 12, 'bold')
                 .setVerticalJustification(Annotation.VerticalJustify.TOP),
             )
           }
-          trebleVfNotes.push(staveNote)
+          trebleVfNotes.push({
+            staveNote,
+            needsTie,
+            pitch: foundNote.pitch,
+            accidental: foundNote.accidental,
+            vfKey,
+          })
           trebleStep += vexTicks
         } else {
+          // rests: use quarter rest every 4 steps, 8th every 2, 16th every 1
           let restNote
           if (
+            trebleStep % 4 === 0 &&
+            !melodyDataSrc.find((n) => n.step > trebleStep && n.step < trebleStep + 4) &&
+            trebleStep + 4 <= endStep
+          ) {
+            restNote = new StaveNote({ clef: 'treble', keys: ['b/4'], duration: 'qr' })
+            trebleStep += 4
+          } else if (
             trebleStep % 2 === 0 &&
             !melodyDataSrc.find((n) => n.step === trebleStep + 1) &&
             trebleStep + 1 < endStep
           ) {
-            restNote = new StaveNote({ clef: 'treble', keys: ['b/4'], duration: 'qr' })
+            restNote = new StaveNote({ clef: 'treble', keys: ['b/4'], duration: '8r' })
             trebleStep += 2
           } else {
-            restNote = new StaveNote({ clef: 'treble', keys: ['b/4'], duration: '8r' })
+            restNote = new StaveNote({ clef: 'treble', keys: ['b/4'], duration: '16r' })
             trebleStep += 1
           }
-          // 查 map：小節開頭是休止符時，檢查 startStep 是否需要標註
           if (chordAnnotationMap.has(startStep) && trebleVfNotes.length === 0) {
             restNote.addModifier(
               new Annotation(chordAnnotationMap.get(startStep))
@@ -619,13 +918,13 @@ const renderAdvancedVexFlow = () => {
                 .setVerticalJustification(Annotation.VerticalJustify.TOP),
             )
           }
-          trebleVfNotes.push(restNote)
+          trebleVfNotes.push({ staveNote: restNote, needsTie: false })
         }
       }
 
       const trebleVoice = new Voice({ num_beats: 4, beat_value: 4 })
         .setStrict(false)
-        .addTickables(trebleVfNotes)
+        .addTickables(trebleVfNotes.map((n) => n.staveNote))
 
       // ==================== 繪製低音譜 ====================
       let bassVoice = null
@@ -643,81 +942,42 @@ const renderAdvancedVexFlow = () => {
             let renderDur = Math.min(notesAtStep[0].duration, maxAllowed)
 
             let vexTicks = 1
-            let durStr = '8'
+            let durStr = '16'
             let isDotted = false
-            if (renderDur >= 8) {
+            if (renderDur >= 16) {
               durStr = 'w'
+              vexTicks = 16
+            } else if (renderDur >= 12) {
+              durStr = 'hd'
+              isDotted = true
+              vexTicks = 12
+            } else if (renderDur >= 8) {
+              durStr = 'h'
               vexTicks = 8
             } else if (renderDur >= 6) {
-              durStr = 'hd'
+              durStr = 'qd'
               isDotted = true
               vexTicks = 6
             } else if (renderDur >= 4) {
-              durStr = 'h'
+              durStr = 'q'
               vexTicks = 4
             } else if (renderDur >= 3) {
-              durStr = 'qd'
+              durStr = '8d'
               isDotted = true
               vexTicks = 3
             } else if (renderDur >= 2) {
-              durStr = 'q'
+              durStr = '8'
               vexTicks = 2
             } else {
-              durStr = '8'
+              durStr = '16'
               vexTicks = 1
             }
 
             const keys = []
             const accs = []
             notesAtStep.forEach((n) => {
-              let letter = 'c'
-              let acc = ''
-              let octave = Math.floor(n.pitch / 12) - 1
-              switch (n.pitch % 12) {
-                case 0:
-                  letter = 'c'
-                  break
-                case 1:
-                  letter = 'c'
-                  acc = '#'
-                  break
-                case 2:
-                  letter = 'd'
-                  break
-                case 3:
-                  letter = 'e'
-                  acc = 'b'
-                  break
-                case 4:
-                  letter = 'e'
-                  break
-                case 5:
-                  letter = 'f'
-                  break
-                case 6:
-                  letter = 'f'
-                  acc = '#'
-                  break
-                case 7:
-                  letter = 'g'
-                  break
-                case 8:
-                  letter = 'g'
-                  acc = '#'
-                  break
-                case 9:
-                  letter = 'a'
-                  break
-                case 10:
-                  letter = 'b'
-                  acc = 'b'
-                  break
-                case 11:
-                  letter = 'b'
-                  break
-              }
-              if (n.accidental) acc = n.accidental
-              keys.push(`${letter}/${octave}`)
+              const { vfKey, letter, acc } = getEnharmonicNote(n.pitch)
+              keys.push(vfKey)
               accs.push(acc)
             })
 
@@ -727,7 +987,8 @@ const renderAdvancedVexFlow = () => {
               duration: durStr,
             })
             accs.forEach((a, idx) => {
-              if (a) sn.addModifier(new Accidental(a), idx)
+              const letter = keys[idx]?.[0] || ''
+              if (a && !isCoveredByKeySig(letter, a)) sn.addModifier(new Accidental(a), idx)
             })
             if (isDotted) sn.addModifier(new Dot(0), 0)
             sn.setStyle({ fillStyle: '#8f94fb', strokeStyle: '#8f94fb' })
@@ -736,14 +997,21 @@ const renderAdvancedVexFlow = () => {
           } else {
             let rNote
             if (
+              bassStep % 4 === 0 &&
+              !aiDataSrc.find((n) => n.step > bassStep && n.step < bassStep + 4) &&
+              bassStep + 4 <= endStep
+            ) {
+              rNote = new StaveNote({ clef: 'bass', keys: ['d/3'], duration: 'qr' })
+              bassStep += 4
+            } else if (
               bassStep % 2 === 0 &&
               !aiDataSrc.find((n) => n.step === bassStep + 1) &&
               bassStep + 1 < endStep
             ) {
-              rNote = new StaveNote({ clef: 'bass', keys: ['d/3'], duration: 'qr' })
+              rNote = new StaveNote({ clef: 'bass', keys: ['d/3'], duration: '8r' })
               bassStep += 2
             } else {
-              rNote = new StaveNote({ clef: 'bass', keys: ['d/3'], duration: '8r' })
+              rNote = new StaveNote({ clef: 'bass', keys: ['d/3'], duration: '16r' })
               bassStep += 1
             }
             bassVfNotes.push(rNote)
@@ -762,14 +1030,12 @@ const renderAdvancedVexFlow = () => {
       trebleVoice.setStave(trebleStave)
       if (bassVoice) bassVoice.setStave(bassStave)
 
-      // 同步所有聲部，對齊休止符，給予 40px 的內距空間
       formatter.format(voicesToFormat, MEASURE_WIDTH - 40, { align_rests: true })
 
       trebleVoice.draw(context, trebleStave)
       if (bassVoice) {
         bassVoice.draw(context, bassStave)
 
-        // 💡 如果到了該行的末端，或是全曲結束，強制把上下兩個五線譜連起來封口
         if (isLastMeasureOfRow) {
           const connectorType = isVeryLastMeasure
             ? StaveConnector.type.BOLD_DOUBLE_RIGHT
@@ -780,6 +1046,25 @@ const renderAdvancedVexFlow = () => {
             .draw()
         }
       }
+
+      // ==================== 連結線 (Tie) 跨小節 ====================
+      trebleVfNotes.forEach((item, idx) => {
+        if (!item.needsTie) return
+        // The next measure's first note for this pitch should get a tie
+        // We store pending ties to be resolved in next measure iteration
+        // For simplicity: draw tie from this note to off-stave (open tie)
+        try {
+          const tie = new StaveTie({
+            first_note: item.staveNote,
+            last_note: null,
+            first_indices: [0],
+            last_indices: [0],
+          })
+          tie.setContext(context).draw()
+        } catch (e) {
+          /* tie drawing is best-effort */
+        }
+      })
 
       currentX += MEASURE_WIDTH
       globalMeasureIndex++
@@ -805,12 +1090,26 @@ const playAdvancedScope = async () => {
   audioService.stopAll()
   Tone.Transport.cancel()
 
-  const stepTime = Tone.Time('8n').toSeconds()
-  const maxSteps = 24 * 8
+  Tone.Transport.bpm.value = detectedBpm.value
+  const stepTime = Tone.Time('16n').toSeconds()
+
+  // 計算這份樂譜實際需要的步數
+  const melMax =
+    historyItem.melodyData?.length > 0
+      ? Math.max(...historyItem.melodyData.map((n) => n.step + n.duration))
+      : 0
+  const aiMax =
+    historyItem.aiData?.length > 0
+      ? Math.max(...historyItem.aiData.map((n) => n.step + n.duration))
+      : 0
+  const actualMaxSteps = Math.max(melMax, aiMax)
+
+  // 長度限制為 32 小節，或實際結束點（取較小者），至少播 1 拍避免錯誤
+  const playMaxSteps = Math.max(1, Math.min(actualMaxSteps, 32 * 16))
 
   if (historyItem.melodyData) {
     historyItem.melodyData
-      .filter((n) => n.step < maxSteps)
+      .filter((n) => n.step < playMaxSteps)
       .forEach((n) => {
         Tone.Transport.schedule(
           (time) =>
@@ -825,7 +1124,7 @@ const playAdvancedScope = async () => {
   }
   if (historyItem.aiData) {
     historyItem.aiData
-      .filter((n) => n.step < maxSteps)
+      .filter((n) => n.step < playMaxSteps)
       .forEach((n) => {
         Tone.Transport.schedule(
           (time) =>
@@ -847,7 +1146,7 @@ const playAdvancedScope = async () => {
     })
     Tone.Transport.stop()
     Tone.Transport.cancel()
-  }, maxSteps * stepTime)
+  }, playMaxSteps * stepTime)
   Tone.Transport.start()
 }
 
@@ -1131,6 +1430,36 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
+/* Demo song button */
+.btn-demo {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 13px !important;
+  padding: 9px 14px !important;
+  border-radius: 10px !important;
+  justify-content: center;
+  gap: 6px;
+  border-style: dashed !important;
+  opacity: 0.85;
+}
+.btn-demo:hover {
+  opacity: 1;
+}
+
+/* Params badge shown next to download button */
+.params-badge {
+  font-family: 'Outfit', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  color: #8f94fb;
+  background: rgba(78, 84, 200, 0.07);
+  border: 1px solid rgba(78, 84, 200, 0.15);
+  border-radius: 20px;
+  padding: 3px 10px;
+  white-space: nowrap;
+  letter-spacing: 0.2px;
+}
+
 .btn-large {
   padding: 13px 28px;
   font-size: 15px;
@@ -1254,5 +1583,21 @@ onUnmounted(() => {
 .fade-up-enter-from {
   opacity: 0;
   transform: translateY(10px);
+}
+
+/* ── Warning Banner ── */
+.length-warning {
+  background: rgba(255, 171, 0, 0.1);
+  color: #d97706;
+  border: 1px solid rgba(255, 171, 0, 0.3);
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-family: 'Outfit', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(255, 171, 0, 0.05);
 }
 </style>

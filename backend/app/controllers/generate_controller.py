@@ -54,9 +54,11 @@ async def generate_from_json(req: GenerateFromJsonRequest) -> bytes:
             melody_midi, complexity=req.complexity, creativity=req.creativity
         )
     except Exception as e:
+        logger.error("模型推理失敗：%s\n%s", e, traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"模型推理失敗：{e}")
 
     return result_midi
+
 
 
 async def generate_from_midi(
@@ -105,7 +107,8 @@ async def generate_from_midi(
 
     try:
         result_midi, chords_list = await service_fn(
-            melody_midi, complexity=complexity, creativity=creativity
+            melody_midi, complexity=complexity, creativity=creativity,
+            original_midi_bytes=raw_bytes,
         )
     except Exception as e:
         logger.error("模型推理失敗：%s\n%s", e, traceback.format_exc())
