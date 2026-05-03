@@ -22,6 +22,7 @@ import asyncio
 from app.core.cleanup import start_cleanup_task
 from app.core.config import get_settings
 from app.core.limiter import limiter
+from app.core.job_queue import get_queue_manager
 from app.routers import generate
 
 settings = get_settings()
@@ -32,6 +33,8 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     # Startup：啟動非同步背景清理任務，確保長期運行時磁碟空間不被塞爆
     asyncio.create_task(start_cleanup_task())
+    # Startup：啟動工作佇列 Worker（序列處理 AI 推理，避免 GPU 記憶體爆炸）
+    get_queue_manager().start_worker()
     yield
     # Shutdown：如需清理資源可在此加入邏輯
 
@@ -61,7 +64,7 @@ app.add_middleware(
     allow_origins=settings.allowed_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-VIP-Password"],
 )
 
 # ── 路由器 ───────────────────────────────────────────────────────────────────

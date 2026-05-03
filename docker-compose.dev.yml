@@ -13,6 +13,7 @@ services:
     environment:
       - MODEL_DIR=/app/app/resources
       - ALLOWED_ORIGINS=*
+      - VIP_QUEUE_PASSWORD=${VIP_QUEUE_PASSWORD:-accompartner2025}
     volumes:
       - ./backend/app/resources:/app/app/resources
 

@@ -22,19 +22,13 @@ from app.services.model_router import get_service
 logger = logging.getLogger(__name__)
 
 
-async def generate_from_json(req: GenerateFromJsonRequest) -> bytes:
+async def generate_from_json(req: GenerateFromJsonRequest, update_progress=None) -> bytes:
     """
     流程：
       1. 把 JSON 音符列表 → MIDI bytes（midi_service）
       2. 根據 mode 選擇推理服務（model_router）
       3. 呼叫推理服務，取得帶伴奏的 MIDI bytes
       4. 回傳給 Router
-
-    Args:
-        req: 驗證後的 GenerateFromJsonRequest
-
-    Returns:
-        MIDI 二進位資料 (bytes)
     """
     try:
         melody_midi = midi_service.notes_to_midi(req.melody, bpm=req.bpm)
@@ -44,14 +38,13 @@ async def generate_from_json(req: GenerateFromJsonRequest) -> bytes:
     service_fn = get_service(req.mode)
     logger.info(
         "JSON 推理請求: mode=%s, complexity=%.2f, creativity=%.2f",
-        req.mode,
-        req.complexity,
-        req.creativity,
+        req.mode, req.complexity, req.creativity,
     )
 
     try:
         result_midi, _ = await service_fn(
-            melody_midi, complexity=req.complexity, creativity=req.creativity
+            melody_midi, complexity=req.complexity, creativity=req.creativity,
+            update_progress=update_progress,
         )
     except Exception as e:
         logger.error("模型推理失敗：%s\n%s", e, traceback.format_exc())
@@ -67,6 +60,7 @@ async def generate_from_midi(
     mode: str,
     complexity: float = 0.5,
     creativity: float = 1.0,
+    update_progress=None,
 ) -> tuple[bytes, list[list[str]]]:
     """
     流程：
@@ -100,15 +94,14 @@ async def generate_from_midi(
     service_fn = get_service(mode)
     logger.info(
         "MIDI 推理請求: mode=%s, complexity=%.2f, creativity=%.2f",
-        mode,
-        complexity,
-        creativity,
+        mode, complexity, creativity,
     )
 
     try:
         result_midi, chords_list = await service_fn(
             melody_midi, complexity=complexity, creativity=creativity,
             original_midi_bytes=raw_bytes,
+            update_progress=update_progress,
         )
     except Exception as e:
         logger.error("模型推理失敗：%s\n%s", e, traceback.format_exc())

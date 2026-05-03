@@ -165,8 +165,14 @@ import {
 import * as Tone from 'tone'
 import { useAppState } from '../../composables/useAppState'
 import audioService from '../../services/audioService'
+import { useQueueState } from '../../composables/useQueueState'
 
 const { isGenerating } = useAppState()
+
+const {
+  currentJobId, queuePosition, jobProgress, jobStageLabel,
+  estimatedWait, elapsedSec, resetQueueState, startPolling, stopPolling
+} = useQueueState()
 
 const editorMode = ref('staff')
 const vexflowContainer = ref(null)
@@ -233,15 +239,12 @@ const generateRandomMelody = () => {
     nextTick(() => renderVexFlow())
   }
 }
-
 const submitMelodyJson = async () => {
   if (melodyData.value.length === 0) return
 
   try {
     isGenerating.value = true
-    if (import.meta.env.DEV) {
-      console.log(`[API Debug] 發送給模型的旋律音符數: ${melodyData.value.length}`)
-    }
+    resetQueueState()
 
     const response = await fetch('/api/generate-from-json', {
       method: 'POST',
@@ -256,43 +259,71 @@ const submitMelodyJson = async () => {
 
     if (!response.ok) throw new Error('Network response was not ok')
 
-    const blob = await response.blob()
-    resultMidiUrl.value = URL.createObjectURL(blob)
+    const data = await response.json()
+    if (!data.job_id) throw new Error('後端未回傳 job_id')
 
-    try {
-      const arrayBuffer = await blob.arrayBuffer()
-      const midi = new Midi(arrayBuffer)
-      const newAiData = []
-      midi.tracks.forEach((track, idx) => {
-        if (import.meta.env.DEV) {
-          console.log(
-            `[MIDI Debug] Track ${idx} | Program: ${track.instrument.number} | 音符數: ${track.notes.length}`,
-          )
+    currentJobId.value = data.job_id
+    queuePosition.value = data.position ?? 0
+    estimatedWait.value = data.estimated_wait_seconds ?? 0
+
+    // 開始輪詢
+    startPolling(data.job_id, {
+      onDone: async (id) => {
+        try {
+          const res = await fetch(`/api/queue/result/${id}`)
+          if (!res.ok) throw new Error('取得結果失敗')
+          // generate-from-json 的結果永遠是 audio/midi bytes
+          const blob = await res.blob()
+          await handleResultData(blob)
+        } catch (e) {
+          console.error('[Queue] Result error:', e)
+          alert(`處理結果時發生錯誤：${e.message}`)
+        } finally {
+          isGenerating.value = false
+          currentJobId.value = null
+          resetQueueState()
         }
-
-        // Program 0 (Piano) 為伴奏
-        if (track.instrument.number !== 0) return
-
-        track.notes.forEach((note) => {
-          const step = Math.round(note.time / 0.25)
-          const duration = Math.round(note.duration / 0.25) || 1
-          let accidental = ''
-          if (note.name.includes('#')) accidental = '#'
-          if (note.name.includes('b')) accidental = 'b'
-          newAiData.push({ pitch: note.midi, step, duration, accidental })
-        })
-      })
-      aiAccompanimentData.value = newAiData
-      if (editorMode.value === 'staff') {
-        nextTick(() => renderVexFlow())
+      },
+      onError: (err) => {
+        alert(`生成失敗：${err}`)
+        isGenerating.value = false
+        currentJobId.value = null
+        resetQueueState()
       }
-    } catch (parseErr) {
-      console.error('[API Error] MIDI 本地解析失敗:', parseErr)
-    }
+    })
   } catch (error) {
     console.error('[API Error] JSON 傳送失敗:', error)
-  } finally {
     isGenerating.value = false
+    currentJobId.value = null
+    resetQueueState()
+  }
+}
+
+const handleResultData = async (blob) => {
+  try {
+    resultMidiUrl.value = URL.createObjectURL(blob)
+    const arrayBuffer = await blob.arrayBuffer()
+    const midi = new Midi(arrayBuffer)
+    const newAiData = []
+    midi.tracks.forEach((track, idx) => {
+      // Program 0 (Piano) 為伴奏
+      if (track.instrument.number !== 0) return
+
+      track.notes.forEach((note) => {
+        const step = Math.round(note.time / 0.25)
+        const duration = Math.round(note.duration / 0.25) || 1
+        let accidental = ''
+        if (note.name.includes('#')) accidental = '#'
+        if (note.name.includes('b')) accidental = 'b'
+        newAiData.push({ pitch: note.midi, step, duration, accidental })
+      })
+    })
+    aiAccompanimentData.value = newAiData
+    if (editorMode.value === 'staff') {
+      nextTick(() => renderVexFlow())
+    }
+  } catch (parseErr) {
+    console.error('[API Error] MIDI 解析失敗:', parseErr)
   }
 }
 
@@ -367,10 +398,30 @@ const handleMouseUp = () => {
   isDrawing.value = false
 }
 
-onMounted(() => window.addEventListener('mouseup', handleMouseUp))
+// MelodyEditor 也在佇列模式下執行，需要接收 App.vue 遮罩的 VIP 插隊訊號
+// 但由於 MelodyEditor 的 submitMelodyJson 提交 generate-from-json，
+// VIP 密碼是透過 Header 傳遞的，這裡只需重送一次帶密碼的請求。
+// 目前快速模式不顯示 VIP 區塊（設計上只在 AdvancedMode 使用），
+// 但仍需確保 polling timer 在元件卸載時被清除。
+
+let _melodyVipChannel = null
+
+onMounted(() => {
+  window.addEventListener('mouseup', handleMouseUp)
+  _melodyVipChannel = new BroadcastChannel('vip-submit')
+  // MelodyEditor 快速模式目前不支援 VIP 插隊（無法重送帶密碼的請求），
+  // 故此處僅監聽以防止訊息在 queue 中堆積。
+  _melodyVipChannel.onmessage = () => { /* 快速模式不處理 VIP 插隊 */ }
+})
+
 onUnmounted(() => {
   window.removeEventListener('mouseup', handleMouseUp)
   audioService.stopAll()
+  stopPolling()
+  if (_melodyVipChannel) {
+    _melodyVipChannel.close()
+    _melodyVipChannel = null
+  }
 })
 
 const isBlackKey = (pitch) => [1, 3, 6, 8, 10].includes(pitch % 12)
@@ -622,24 +673,26 @@ const renderVexFlow = () => {
           vfNotes.push(staveNote)
           currentStep += renderDuration
         } else {
-          let restNote
-          if (
-            currentStep % 2 === 0 &&
-            !displayData.find((n) => n.step === currentStep + 1) &&
-            currentStep + 1 < endStep
-          ) {
-            restNote = new StaveNote({ clef: 'treble', keys: ['b/4'], duration: 'qr' })
-            currentStep += 2
+          let restNote;
+          const canRestQuarter = (currentStep % 2 === 0) &&
+                                 !displayData.find(n => n.step === currentStep + 1) &&
+                                 (currentStep + 1 < endStep);
+          
+          if (canRestQuarter) {
+            restNote = new StaveNote({ clef: 'treble', keys: ['b/4'], duration: 'qr' });
+            currentStep += 2;
           } else {
-            restNote = new StaveNote({ clef: 'treble', keys: ['b/4'], duration: '8r' })
-            currentStep += 1
+            restNote = new StaveNote({ clef: 'treble', keys: ['b/4'], duration: '8r' });
+            currentStep += 1;
           }
-          if (m === ghostActionMeasure)
+          
+          if (m === ghostActionMeasure) {
             restNote.setStyle({
               fillStyle: 'rgba(150, 150, 150, 0.5)',
               strokeStyle: 'rgba(150, 150, 150, 0.5)',
-            })
-          vfNotes.push(restNote)
+            });
+          }
+          vfNotes.push(restNote);
         }
       }
 

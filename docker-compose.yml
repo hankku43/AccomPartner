@@ -13,6 +13,8 @@ services:
       # 使用 * 代表允許任意來源跨域呼叫 API，在生產環境中具有安全風險。
       - MODEL_DIR=/app/app/resources
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost}
+      # 插隊密碼（留空則使用預設值 accompartner2025，建議改為自訂密碼）
+      - VIP_QUEUE_PASSWORD=${VIP_QUEUE_PASSWORD:-accompartner2025}
 
     # 在 2GB RAM 機器上，我們不限制記憶體，全交由 Swap 處理 (否則 Docker 會主動 Kill 掉)
     volumes:

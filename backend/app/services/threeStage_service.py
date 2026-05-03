@@ -65,6 +65,46 @@ PITCH_MAP = {
     "F#": 6, "G": 7, "G#": 8, "A": 9, "A#": 10, "B": 11,
 }
 
+# ── 視窗滑動參數 ─────────────────────────────────────────────────────────────
+WINDOW_BARS = 4
+STRIDE_BARS = 2
+PREFIX_BARS = WINDOW_BARS - STRIDE_BARS  # = 2
+MAX_GEN_LEN = 2048
+
+# ── 和弦格式正規化（C:maj → C, A:min → Am, N → N）─────────────────────────
+_QUALITY_SUFFIX: dict[str, str] = {
+    "maj": "",
+    "min": "m",
+    "dim": "dim",
+    "aug": "aug",
+    "sus2": "sus2",
+    "sus4": "sus4",
+    "maj7": "maj7",
+    "min7": "m7",
+    "7": "7",
+    "hdim7": "m7b5",
+    "dim7": "dim7",
+    "minmaj7": "mM7",
+    "maj6": "6",
+    "min6": "m6",
+}
+
+
+def _normalize_chord_name(raw: str) -> str:
+    """
+    把訓練字典格式的和弦名稱轉為前端可讀的標準格式。
+    例：C:maj → C, A:min → Am, G:maj/5 → G, N → N
+    """
+    if not raw or raw in ("N", "PAD", "BOS", "EOS", "MASK"):
+        return "N"
+    raw_base = raw.split("/")[0]
+    if ":" not in raw_base:
+        return raw_base
+    root, quality = raw_base.split(":", 1)
+    suffix = _QUALITY_SUFFIX.get(quality, quality)
+    return root + suffix
+
+
 # ── Lazy-loaded 快取 ────────────────────────────────────────────────────────
 _macro_model: POP909MacroChordPredictor | None = None
 _macro_tokenizer: REMI | None = None
@@ -81,17 +121,20 @@ _accom_model: POP909Transformer | None = None
 # 工具函式
 # ============================================================
 
-def analyze_and_transpose_music21(input_midi, temp_midi):
+def analyze_and_transpose_music21(input_midi, temp_midi, key_source: str | None = None):
     """
     偵測調性並將 MIDI 移調至 C/Am，回傳 (semitones, key_str)。
+    key_source: 若提供，從此路徑偵測調性（用於上傳 MIDI 的原始檔），
+                但仍對 input_midi 進行移調（input_midi 可能是預處理後的旋律）。
     優先順序：
       1. 讀取 MIDI 內建的 key_signature Meta Event
       2. 無標記時，使用 music21 分析音符組成
     """
-    key_str = midi_service.read_key_str_from_midi(input_midi)
-    
+    detect_from = key_source if key_source else input_midi
+    key_str = midi_service.read_key_str_from_midi(detect_from)
+
     # ── Step 1: MIDI 內建調號 ──────────────────────────────────────────────────
-    embedded = midi_service.read_key_signature_from_midi(input_midi)
+    embedded = midi_service.read_key_signature_from_midi(detect_from)
     if embedded is not None:
         _, _, semitones_to_c = embedded
         if semitones_to_c != 0:
@@ -108,10 +151,10 @@ def analyze_and_transpose_music21(input_midi, temp_midi):
 
     # ── Step 2: Fallback — music21 演算法偵測 ─────────────────────────────────
     logger.info("MIDI 無內建調號，改用 music21 分析...")
-    score = music21.converter.parse(input_midi)
-    key = score.analyze("key")
+    detect_score = music21.converter.parse(detect_from)
+    key = detect_score.analyze("key")
     logger.info("偵測到原曲調性: %s %s", key.tonic.name, key.mode)
-    
+
     if key.mode == "minor":
         key_str = key.tonic.name + "m"
         target_pitch = music21.pitch.Pitch("A")
@@ -120,18 +163,18 @@ def analyze_and_transpose_music21(input_midi, temp_midi):
         target_pitch = music21.pitch.Pitch("C")
     key_str = key_str.replace("-", "b")
 
-        
     interval = music21.interval.Interval(key.tonic, target_pitch)
     semitones = interval.semitones
 
+    mel_score = music21.converter.parse(input_midi)
     if semitones != 0:
         logger.info("轉調至 %s %s (平移 %d 半音)", target_pitch.name, key.mode, semitones)
-        transposed_score = score.transpose(interval)
+        transposed_score = mel_score.transpose(interval)
         transposed_score.write("midi", fp=temp_midi)
     else:
         logger.info("已是目標調性，無需轉調。")
-        score.write("midi", fp=temp_midi)
-        
+        mel_score.write("midi", fp=temp_midi)
+
     return semitones, key_str
 
 
@@ -259,7 +302,7 @@ def _get_local() -> tuple[POP909ChordPredictor, REMI, dict]:
     return _local_model, _local_tokenizer, _local_chord_to_id
 
 
-def _get_accom() -> tuple[POP909Transformer]:
+def _get_accom() -> POP909Transformer:
     global _accom_model
     if _accom_model is None:
         logger.info("正在載入 Stage 3 (Accompaniment) Checkpoint...")
@@ -298,7 +341,6 @@ def generate_window_accom(
     src_tensor = torch.tensor([src_ids], dtype=torch.long).to(DEVICE)
     chords_tensor = torch.tensor([chords_ids], dtype=torch.long).to(DEVICE)
 
-    MAX_GEN_LEN = 2048
     with torch.autocast(device_type="cuda" if DEVICE == "cuda" else "cpu", dtype=torch.bfloat16 if DEVICE == "cuda" else torch.float32):
         for step in range(len(prefix_ids), MAX_GEN_LEN):
             tgt_tensor = torch.tensor([tgt_ids], dtype=torch.long).to(DEVICE)
@@ -331,7 +373,11 @@ def _run_inference(
     melody_midi_bytes: bytes,
     complexity: float = 0.5,
     creativity: float = 1.0,
+    original_midi_bytes: bytes | None = None,
+    update_progress=None,
 ) -> tuple[bytes, list[list[str]]]:
+    _p = update_progress or (lambda prog, label='': None)
+    _p(0.05, "Loading models...")
     macro_model, macro_tokenizer, macro_chord_to_id = _get_macro()
     local_model, local_tokenizer, local_chord_to_id = _get_local()
     accom_model = _get_accom()
@@ -348,9 +394,15 @@ def _run_inference(
         f_in.write(melody_midi_bytes)
         tmp_path = f_in.name
 
+    tmp_key_source = None
+    if original_midi_bytes is not None:
+        with tempfile.NamedTemporaryFile(suffix=".mid", prefix="key_src_", delete=False) as f_ks:
+            f_ks.write(original_midi_bytes)
+            tmp_key_source = f_ks.name
+
     try:
         temp_path = tmp_path + "_transposed.mid"
-        semitones_offset, key_str = analyze_and_transpose_music21(tmp_path, temp_path)
+        semitones_offset, key_str = analyze_and_transpose_music21(tmp_path, temp_path, key_source=tmp_key_source)
 
 
         score = symusic.Score(temp_path)
@@ -368,6 +420,7 @@ def _run_inference(
         # ==========================
         # STAGE 1: MACRO
         # ==========================
+        _p(0.10, "Stage 1/3: Macro chord prediction...")
         logger.info("[1/3] STAGE 1: MACRO")
         macro_pad_id = macro_tokenizer.vocab.get("PAD_None", 0)
         len_token_id = macro_tokenizer.vocab.get(f"Len_{total_bars}", macro_pad_id)
@@ -419,9 +472,8 @@ def _run_inference(
         # ==========================
         # STAGE 2: LOCAL CHORDS
         # ==========================
+        _p(0.40, "Stage 2/3: Local chord refinement...")
         logger.info("[2/3] STAGE 2: LOCAL")
-        WINDOW_BARS = 4
-        STRIDE_BARS = 2
         window_size_ticks = WINDOW_BARS * ticks_per_bar
         step_size_ticks = STRIDE_BARS * ticks_per_bar
         total_windows = int(math.ceil((total_ticks - window_size_ticks) / step_size_ticks)) + 1 if total_ticks > window_size_ticks else 1
@@ -504,6 +556,7 @@ def _run_inference(
         # ==========================
         # STAGE 3: ACCOMPANIMENT
         # ==========================
+        _p(0.70, "Stage 3/3: Accompaniment generation...")
         logger.info("[3/3] STAGE 3: ACCOMPANIMENT")
         all_notes = getattr(score.tracks[0], "notes", [])
         acc_notes_all = []
@@ -539,7 +592,6 @@ def _run_inference(
 
             full_notes = tokens_to_notes(full_tgt_token_ids, local_tokenizer, tpq)
             
-            PREFIX_BARS = WINDOW_BARS - STRIDE_BARS
             prefix_start_local = (WINDOW_BARS - PREFIX_BARS) * ticks_per_bar
             prefix_end_local = WINDOW_BARS * ticks_per_bar
             
@@ -568,6 +620,7 @@ def _run_inference(
         # ==========================
         # 4. 渲染組合
         # ==========================
+        _p(0.95, "Rendering final MIDI...")
         logger.info("渲染組合音樂回原曲調性中...")
         orig_score = symusic.Score(tmp_path)
         final_score = symusic.Score(orig_score.ticks_per_quarter)
@@ -592,33 +645,6 @@ def _run_inference(
         final_score.tracks.append(acc_track)
 
         # 整理和弦標籤回傳給前端 (每小節一個 list)
-        _QUALITY_SUFFIX = {
-            "maj": "",
-            "min": "m",
-            "dim": "dim",
-            "aug": "aug",
-            "sus2": "sus2",
-            "sus4": "sus4",
-            "maj7": "maj7",
-            "min7": "m7",
-            "7": "7",
-            "hdim7": "m7b5",
-            "dim7": "dim7",
-            "minmaj7": "mM7",
-            "maj6": "6",
-            "min6": "m6",
-        }
-
-        def _normalize_chord_name(raw: str) -> str:
-            if not raw or raw in ("N", "PAD", "BOS", "EOS", "MASK"):
-                return "N"
-            raw_base = raw.split("/")[0]
-            if ":" not in raw_base:
-                return raw_base
-            root, quality = raw_base.split(":", 1)
-            suffix = _QUALITY_SUFFIX.get(quality, quality)
-            return root + suffix
-
         sorted_chord_list = []
         for i in range(total_bars):
             start = i * steps_per_bar
@@ -655,6 +681,8 @@ def _run_inference(
             os.remove(tmp_path)
         if os.path.exists(tmp_path + "_transposed.mid"):
             os.remove(tmp_path + "_transposed.mid")
+        if tmp_key_source and os.path.exists(tmp_key_source):
+            os.remove(tmp_key_source)
 
 
 # ============================================================
@@ -666,9 +694,10 @@ async def generate(
     complexity: float = 0.5,
     creativity: float = 1.0,
     original_midi_bytes: bytes | None = None,
+    update_progress=None,
 ) -> tuple[bytes, list[list[str]]]:
     """Three-Stage Coarse-to-Fine 生成器。"""
     return await asyncio.to_thread(
-        _run_inference, melody_midi_bytes, complexity, creativity
+        _run_inference, melody_midi_bytes, complexity, creativity, original_midi_bytes, update_progress
     )
 

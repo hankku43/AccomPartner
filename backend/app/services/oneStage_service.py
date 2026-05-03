@@ -339,16 +339,13 @@ def _generate_window(
 
 
 def _run_inference(
-    melody_midi_bytes: bytes, complexity: float = 0.5, creativity: float = 1.0
+    melody_midi_bytes: bytes, complexity: float = 0.5, creativity: float = 1.0,
+    update_progress=None,
 ) -> tuple[bytes, list[str]]:
-    """
-    完整推理流程：
-      1. 將 bytes 寫入暫存檔
-      2. 調性分析 (music21)
-      3. 滑動視窗生成
-      4. 組合雙軌 MIDI 並回傳 bytes
-    """
+    _p = update_progress or (lambda prog, label='': None)
+    _p(0.05, "Loading models...")
     model, tokenizer = _get_model_and_tokenizer()
+    _p(0.10, "Generating accompaniment...")
 
     vocab = tokenizer.vocab
     BOS_ID = vocab.get("BOS_None", vocab.get("BOS", 0))
@@ -483,6 +480,8 @@ def _run_inference(
         if not acc_notes_all:
             raise ValueError("模型未生成任何伴奏音符")
 
+        _p(0.90, "Rendering final MIDI...")
+
         # ── 6. 組合雙軌 MIDI ───────────────────────────────────────────────────
         acc_notes_all.sort(key=lambda n: (n.time, n.pitch))
 
@@ -556,19 +555,9 @@ async def generate(
     complexity: float = 0.5,
     creativity: float = 1.0,
     original_midi_bytes: bytes | None = None,
+    update_progress=None,
 ) -> tuple[bytes, list[str]]:
-
-    """
-    使用 oneStage (norm_false) 模型為旋律生成伴奏，回傳雙軌 MIDI bytes。
-
-    Args:
-        melody_midi_bytes: 單軌旋律的 MIDI bytes
-        complexity:        伴奏複雜度 0.0=極簡 ~ 1.0=複雜（預設 0.5）
-        creativity:        創意程度（預設 1.0，越低越穩定）
-
-    Returns:
-        雙軌 MIDI bytes（旋律軌 + 伴奏軌）及空氣和弦清單
-    """
+    """oneStage 生成器。"""
     return await asyncio.to_thread(
-        _run_inference, melody_midi_bytes, complexity, creativity
+        _run_inference, melody_midi_bytes, complexity, creativity, update_progress
     )

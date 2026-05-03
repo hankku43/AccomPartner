@@ -105,7 +105,8 @@
                   @click="submitMidiFile"
                   class="modern-btn btn-primary btn-large w-full"
                 >
-                  Generate Accompaniment
+                  <span v-if="!isGenerating">Generate Accompaniment</span>
+                  <span v-else>⏳ {{ queuePosition > 0 ? `Queued #${queuePosition}` : 'Generating...' }}</span>
                 </button>
               </div>
             </div>
@@ -223,6 +224,7 @@ import {
 } from 'vexflow'
 import * as Tone from 'tone'
 import { useAppState } from '../../composables/useAppState'
+import { useQueueState } from '../../composables/useQueueState'
 import audioService from '../../services/audioService'
 
 const { isGenerating } = useAppState()
@@ -414,10 +416,207 @@ watch(selectedTrackIndex, (newIndex) => {
   }
 })
 
+// ── Queue 狀態（使用共用 composable，讓 App.vue 全局遮罩也能讀取）────────────
+const {
+  currentJobId,
+  queuePosition,
+  jobProgress,
+  jobStageLabel,
+  estimatedWait,
+  vipPasswordInput,
+  vipEligible,
+  vipCooldownRemaining,
+  vipSubmitting,
+  vipMessage,
+  vipMessageType,
+  resetQueueState,
+  startPolling,
+  stopPolling,
+} = useQueueState()
+
+let _cooldownTimer = null
+
+// 取得最終結果並渲染
+const fetchAndHandleResult = async (jobId) => {
+  try {
+    const res = await fetch(`/api/queue/result/${jobId}`)
+    if (!res.ok) throw new Error(`result fetch failed: ${res.status}`)
+    const jsonData = await res.json()
+    await processMidiResult(jsonData)
+  } catch (e) {
+    console.error('[Queue] Result fetch error:', e)
+    alert(`取得結果失敗：${e.message}`)
+  } finally {
+    isGenerating.value = false
+    currentJobId.value = null
+    resetQueueState()
+  }
+}
+
+// 把 API 回傳的 jsonData 轉成樂譜資料（抽出共用邏輯）
+const processMidiResult = async (jsonData) => {
+  let blob
+  let chordLabels = []
+  if (jsonData && jsonData.midi_b64) {
+    const binaryStr = atob(jsonData.midi_b64)
+    const len = binaryStr.length
+    const bytes = new Uint8Array(len)
+    for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i)
+    blob = new Blob([bytes], { type: 'audio/midi' })
+    if (jsonData.chords) chordLabels = jsonData.chords
+  } else {
+    console.error('[AdvancedMode] processMidiResult: midi_b64 missing in response', jsonData)
+    throw new Error('後端回傳格式異常（缺少 midi_b64），請重試')
+  }
+
+  const url = URL.createObjectURL(blob)
+  const arrayBuffer = await blob.arrayBuffer()
+  const midi = new Midi(arrayBuffer)
+
+  const newMelodyData = []
+  const newAiData = []
+  const noteTracks = midi.tracks.filter((t) => t.notes.length > 0)
+  noteTracks.forEach((track, index) => {
+    const targetArray = index === 0 && noteTracks.length > 1 ? newMelodyData : newAiData
+    track.notes.forEach((note) => {
+      const ppq = midi.header.ppq || 480
+      const ticksPerStep = ppq / 4
+      const step = Math.round(note.ticks / ticksPerStep)
+      const duration = Math.max(1, Math.round(note.durationTicks / ticksPerStep))
+      let accidental = ''
+      if (note.name.includes('#')) accidental = '#'
+      if (note.name.includes('b')) accidental = 'b'
+      targetArray.push({ pitch: note.midi, step, duration, accidental })
+    })
+  })
+
+  if (
+    advancedGenerationHistory.value.length === 1 &&
+    advancedGenerationHistory.value[0].aiData.length === 0
+  ) {
+    advancedGenerationHistory.value = []
+  }
+
+  advancedGenerationHistory.value.push({
+    midiUrl: url,
+    melodyData: newMelodyData,
+    aiData: newAiData,
+    chords: chordLabels,
+    params: {
+      mode: selectedInferenceMode.value,
+      complexity: generationComplexity.value,
+      creativity: generationCreativity.value,
+    },
+  })
+  currentAdvancedHistoryIndex.value = advancedGenerationHistory.value.length - 1
+  nextTick(() => renderAdvancedVexFlow())
+}
+
+// 插隊密碼提交
+const submitVipPassword = async () => {
+  if (!vipPasswordInput.value || !currentJobId.value || vipSubmitting.value) return
+  vipSubmitting.value = true
+  vipMessage.value = ''
+  try {
+    // 重新提交，帶上插隊密碼；後端會把這個 job 插到最前面
+    // 但注意：我們的 job 已在佇列中，這裡採用「重新提交」並拋棄舊 job 的方式
+    // 更好的做法是傳送 PATCH /api/queue/promote/{job_id} ——
+    // 但為簡單起見，我們在 formData 裡帶密碼重提交，後端偵測密碼正確即插隊
+    const formData = new FormData()
+    formData.append('midiFile', rawFile.value)
+    formData.append('targetTrackIndex', selectedTrackIndex.value)
+    formData.append('mode', selectedInferenceMode.value)
+    formData.append('complexity', generationComplexity.value)
+    formData.append('creativity', generationCreativity.value)
+
+    const res = await fetch('/api/generate-from-midi', {
+      method: 'POST',
+      body: formData,
+      headers: { 'X-VIP-Password': vipPasswordInput.value },
+    })
+    const data = await res.json()
+
+    if (!res.ok) {
+      vipMessage.value = data.detail || 'Wrong password or cooldown active'
+      vipMessageType.value = 'error'
+      return
+    }
+
+    if (data.job_id) {
+      if (data.vip_accepted) {
+        // 切換追蹤新 job（插隊成功），取消舊 job 釋放佇列資源
+        const oldJobId = currentJobId.value
+        stopPolling()
+        if (oldJobId) {
+          fetch(`/api/queue/cancel/${oldJobId}`, { method: 'DELETE' }).catch(() => {})
+        }
+        currentJobId.value = data.job_id
+        queuePosition.value = data.position ?? 0
+        estimatedWait.value = data.estimated_wait_seconds ?? 0
+        vipMessage.value = data.position === 0 ? '✅ Priority jump successful! Starting soon' : `✅ Priority jump successful! Now at position ${data.position}`
+        vipMessageType.value = 'success'
+        vipPasswordInput.value = ''
+        startPolling(data.job_id, {
+          onDone: fetchAndHandleResult,
+          onError: (err) => {
+            alert(`生成失敗：${err}`)
+            isGenerating.value = false
+          }
+        })
+        startVipCooldown(60)
+      } else {
+        vipMessage.value = 'Priority jump failed: wrong password or cooldown active'
+        vipMessageType.value = 'error'
+        vipSubmitting.value = false
+        return  // 不切換 job，不重新 startPolling
+      }
+    } else {
+      vipMessage.value = 'Priority jump failed, check your password'
+      vipMessageType.value = 'error'
+    }
+  } catch (e) {
+    vipMessage.value = `Network error: ${e.message}`
+    vipMessageType.value = 'error'
+  } finally {
+    vipSubmitting.value = false
+  }
+}
+
+const startVipCooldown = (seconds) => {
+  vipEligible.value = false
+  vipCooldownRemaining.value = seconds
+  if (_cooldownTimer) clearInterval(_cooldownTimer)
+  _cooldownTimer = setInterval(() => {
+    vipCooldownRemaining.value -= 1
+    if (vipCooldownRemaining.value <= 0) {
+      clearInterval(_cooldownTimer)
+      _cooldownTimer = null
+      vipEligible.value = true
+      vipCooldownRemaining.value = 0
+    }
+  }, 1000)
+}
+
+// 檢查冷卻狀態（初始化時）
+const checkVipStatus = async () => {
+  try {
+    const res = await fetch('/api/queue/vip-check')
+    const data = await res.json()
+    vipEligible.value = data.eligible
+    if (!data.eligible) {
+      startVipCooldown(data.cooldown_remaining_seconds)
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
 const submitMidiFile = async () => {
   if (!rawFile.value || selectedTrackIndex.value === '') return
   try {
     isGenerating.value = true
+    resetQueueState()
+
     const formData = new FormData()
     formData.append('midiFile', rawFile.value)
     formData.append('targetTrackIndex', selectedTrackIndex.value)
@@ -426,82 +625,35 @@ const submitMidiFile = async () => {
     formData.append('creativity', generationCreativity.value)
 
     const response = await fetch('/api/generate-from-midi', { method: 'POST', body: formData })
-    if (!response.ok) throw new Error('Network response was not ok')
-
-    const jsonStr = await response.text()
-    let jsonData = null
-    try {
-      jsonData = JSON.parse(jsonStr)
-      if (import.meta.env.DEV) console.log('[API] Response parsed:', jsonData)
-    } catch (e) {
-      console.error(
-        '[API Error] 回應不是合法的 JSON，這可能代表後端發生了錯誤:',
-        jsonStr.slice(0, 200),
-      )
-      throw new Error('後端回應格式錯誤，請檢查後端日誌')
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}))
+      throw new Error(err.detail || 'Network response was not ok')
     }
 
-    let blob
-    let chordLabels = []
-    if (jsonData && jsonData.midi_b64) {
-      const binaryStr = atob(jsonData.midi_b64)
-      const len = binaryStr.length
-      const bytes = new Uint8Array(len)
-      for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i)
-      blob = new Blob([bytes], { type: 'audio/midi' })
-      if (jsonData.chords) chordLabels = jsonData.chords
-    } else {
-      blob = new Blob([jsonStr], { type: 'audio/midi' })
-    }
+    const data = await response.json()
+    if (!data.job_id) throw new Error('後端未回傳 job_id')
 
-    const url = URL.createObjectURL(blob)
-    const arrayBuffer = await blob.arrayBuffer()
-    const midi = new Midi(arrayBuffer)
+    currentJobId.value = data.job_id
+    queuePosition.value = data.position ?? 0
+    estimatedWait.value = data.estimated_wait_seconds ?? 0
+    jobProgress.value = data.progress ?? 0
+    jobStageLabel.value = data.stage_label ?? 'Waiting to start...'
 
-    const newMelodyData = []
-    const newAiData = []
-    // Task 3: skip the Chords marker track (no notes)
-    const noteTracks = midi.tracks.filter((t) => t.notes.length > 0)
-    noteTracks.forEach((track, index) => {
-      const targetArray = index === 0 && noteTracks.length > 1 ? newMelodyData : newAiData
-      track.notes.forEach((note) => {
-        // Task 3: 16th note resolution
-        const ppq = midi.header.ppq || 480
-        const ticksPerStep = ppq / 4
-        const step = Math.round(note.ticks / ticksPerStep)
-        const duration = Math.max(1, Math.round(note.durationTicks / ticksPerStep))
-        let accidental = ''
-        if (note.name.includes('#')) accidental = '#'
-        if (note.name.includes('b')) accidental = 'b'
-        targetArray.push({ pitch: note.midi, step, duration, accidental })
-      })
+    // 檢查 VIP 冷卻
+    await checkVipStatus()
+
+    // 開始輪詢
+    startPolling(data.job_id, {
+      onDone: fetchAndHandleResult,
+      onError: (err) => {
+        alert(`生成失敗：${err}`)
+        isGenerating.value = false
+      }
     })
-
-    if (
-      advancedGenerationHistory.value.length === 1 &&
-      advancedGenerationHistory.value[0].aiData.length === 0
-    ) {
-      advancedGenerationHistory.value = []
-    }
-
-    // Task 4: store generation params with this history entry
-    advancedGenerationHistory.value.push({
-      midiUrl: url,
-      melodyData: newMelodyData,
-      aiData: newAiData,
-      chords: chordLabels,
-      params: {
-        mode: selectedInferenceMode.value,
-        complexity: generationComplexity.value,
-        creativity: generationCreativity.value,
-      },
-    })
-    currentAdvancedHistoryIndex.value = advancedGenerationHistory.value.length - 1
-    nextTick(() => renderAdvancedVexFlow())
   } catch (error) {
     console.error('[API Error]', error)
-  } finally {
     isGenerating.value = false
+    alert(`提交失敗：${error.message}`)
   }
 }
 
@@ -1160,14 +1312,29 @@ const handleResize = () => {
   }, 200) // 延遲 200ms 避免拉動視窗時狂暴重繪
 }
 
-onMounted(() => {
-  window.addEventListener('resize', handleResize) // 註冊監聽器
+// ── BroadcastChannel：接收來自 App.vue 全局遮罩的 VIP 插隊請求 ───────────────
+let _vipChannel = null
+
+onMounted(async () => {
+  await initSynth()
+  window.addEventListener('resize', handleResize)
+  _vipChannel = new BroadcastChannel('vip-submit')
+  _vipChannel.onmessage = (e) => {
+    // 必須檢查 jobId，確保只有發起插隊的該任務會處理回應
+    if (e.data?.password && e.data?.jobId === currentJobId.value) {
+      vipPasswordInput.value = e.data.password
+      submitVipPassword()
+    }
+  }
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
   audioService.stopAll()
   isPlayingAdvanced.value = false
+  stopPolling()
+  if (_cooldownTimer) { clearInterval(_cooldownTimer); _cooldownTimer = null }
+  if (_vipChannel) { _vipChannel.close(); _vipChannel = null }
 })
 </script>
 
@@ -1600,4 +1767,218 @@ onUnmounted(() => {
   gap: 8px;
   box-shadow: 0 4px 12px rgba(255, 171, 0, 0.05);
 }
+
+/* ── Queue Status Panel ── */
+.queue-status-panel {
+  margin-top: 14px;
+  padding: 16px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 24px rgba(99, 102, 241, 0.1);
+  font-family: 'Outfit', sans-serif;
+}
+
+.queue-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.queue-icon {
+  font-size: 18px;
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.queue-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #e2e8f0);
+}
+
+.queue-badge {
+  font-size: 12px;
+  font-weight: 700;
+  color: #818cf8;
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  padding: 2px 8px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+/* Progress Track */
+.queue-progress-track {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 6px;
+  position: relative;
+}
+
+.queue-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #818cf8, #6366f1, #a78bfa);
+  border-radius: 999px;
+  transition: width 0.5s ease;
+  min-width: 4px;
+}
+
+/* 排隊等待中：跑馬燈動畫 */
+.progress-pulsing {
+  background: linear-gradient(
+    90deg,
+    rgba(129, 140, 248, 0.4) 0%,
+    rgba(99, 102, 241, 0.9) 40%,
+    rgba(167, 139, 250, 0.9) 60%,
+    rgba(129, 140, 248, 0.4) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.8s linear infinite;
+  width: 100% !important;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.queue-stage-label {
+  font-size: 11px;
+  color: rgba(148, 163, 184, 0.85);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* ── VIP 插隊區塊 ── */
+.vip-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.vip-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #f59e0b;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vip-hint {
+  font-weight: 400;
+  color: rgba(148, 163, 184, 0.7);
+  font-size: 11px;
+}
+
+.vip-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.vip-input {
+  flex: 1;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 8px;
+  color: #e2e8f0;
+  font-size: 13px;
+  font-family: 'Outfit', sans-serif;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.vip-input:focus {
+  border-color: rgba(245, 158, 11, 0.7);
+  background: rgba(245, 158, 11, 0.05);
+}
+.vip-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.vip-input::placeholder {
+  color: rgba(148, 163, 184, 0.5);
+}
+
+.vip-btn {
+  padding: 8px 16px;
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  border: none;
+  border-radius: 8px;
+  color: white;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: 'Outfit', sans-serif;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.15s;
+  white-space: nowrap;
+}
+.vip-btn:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+.vip-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.vip-cooldown {
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgba(148, 163, 184, 0.7);
+}
+
+.vip-message {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+.vip-message.success {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.2);
+}
+.vip-message.error {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.2);
+}
+
+/* ── Transitions ── */
+.queue-panel-enter-active,
+.queue-panel-leave-active {
+  transition: opacity 0.35s ease, transform 0.35s ease, max-height 0.4s ease;
+  overflow: hidden;
+  max-height: 400px;
+}
+.queue-panel-enter-from,
+.queue-panel-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+  max-height: 0;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
 </style>
+

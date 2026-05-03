@@ -660,7 +660,10 @@ def _run_inference(
     complexity: float = 0.5,
     creativity: float = 1.0,
     original_midi_bytes: bytes | None = None,  # 完整原始 MIDI，用於調性分析
+    update_progress=None,
 ) -> tuple[bytes, list[str]]:
+    _p = update_progress or (lambda prog, label='': None)
+    _p(0.05, "Loading models...")
     # ── 載入模型 ──────────────────────────────────────────────────────────────
     stage2_model, tokenizer, stage2_chord_to_id = _get_stage2()
     chord_model, stage1_chord_to_id, chord_bos_id, chord_eos_id = _get_stage1(
@@ -713,9 +716,9 @@ def _run_inference(
                 orig_tmp_path = f_orig.name
             try:
                 to_c_offset, back_offset, key_str = _detect_key_offset(orig_tmp_path)
-                print(
-                    f"[TwoStage] 使用完整原始 MIDI 分析調性: to_c={to_c_offset:+d}, back={back_offset:+d}, 調號={key_str}",
-                    flush=True,
+                logger.info(
+                    "[TwoStage] 使用完整原始 MIDI 分析調性: to_c=%+d, back=%+d, 調號=%s",
+                    to_c_offset, back_offset, key_str,
                 )
             finally:
                 if os.path.exists(orig_tmp_path):
@@ -763,6 +766,8 @@ def _run_inference(
             logger.debug("旋律 token 數：%d", len(src_ids))
 
             # ── Stage 1：預測和弦 ──────────────────────────────────────────────
+            if w_idx == 0:
+                _p(0.15, "Stage 1/2: Chord prediction...")
             steps_per_bar = numerator
             target_len = WINDOW_BARS * steps_per_bar
             logger.debug("Stage 1 預測和弦，目標長度：%d", target_len)
@@ -812,6 +817,8 @@ def _run_inference(
             logger.debug("Stage 2 和弦 ID 數：%d", len(chords_ids))
 
             # ── Stage 2：生成伴奏 ──────────────────────────────────────────────
+            if w_idx == 0:
+                _p(0.50, "Stage 2/2: Accompaniment generation...")
             logger.debug("Stage 2 生成伴奏，前綴 token 數：%d", len(prefix_token_ids))
             full_tgt_token_ids = _generate_window(
                 stage2_model,
@@ -961,15 +968,12 @@ async def generate_bar(
     complexity: float = 0.5,
     creativity: float = 1.0,
     original_midi_bytes: bytes | None = None,
+    update_progress=None,
 ) -> tuple[bytes, list[list[str]]]:
     """Bar-level AR 和弦預測器 (pop909_chord_predictor_bar)。"""
     return await asyncio.to_thread(
-        _run_inference,
-        melody_midi_bytes,
-        "bar",
-        complexity,
-        creativity,
-        original_midi_bytes,
+        _run_inference, melody_midi_bytes, "bar",
+        complexity, creativity, original_midi_bytes, update_progress,
     )
 
 
@@ -978,13 +982,10 @@ async def generate_nar(
     complexity: float = 0.5,
     creativity: float = 1.0,
     original_midi_bytes: bytes | None = None,
+    update_progress=None,
 ) -> tuple[bytes, list[list[str]]]:
     """NAR 和弦預測器 (pop909_chord_predictor_nar)。"""
     return await asyncio.to_thread(
-        _run_inference,
-        melody_midi_bytes,
-        "nar",
-        complexity,
-        creativity,
-        original_midi_bytes,
+        _run_inference, melody_midi_bytes, "nar",
+        complexity, creativity, original_midi_bytes, update_progress,
     )
